@@ -29,6 +29,13 @@ def baseline_pooling(query_states, key_states, block_size): # ->(bsz, num_heads,
     attn_weights = attn_weights.reshape(B, H, -1)
     return attn_weights
 
+def compute_divergence(baseline, block_probs, block_size):
+    B, Tblocks, D = block_probs.shape
+    B, T, D = baseline.shape
+    block_probs_reshaped = block_probs.unsqueeze(2).repeat(1, 1, block_size, 1).view(B, Tblocks * block_size, D)
+    kl_div = F.kl_div(F.log(baseline + 1e-8), block_probs_reshaped, reduction='mean')
+    return kl_div.item()
+
 def expand_blocks(attn_weights, block_size):
     B, num_chunks, _ = attn_weights.shape
     attn_weights = attn_weights.unsqueeze(-2) # B, num_chunks, 1, num_chunks

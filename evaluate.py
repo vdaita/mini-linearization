@@ -10,6 +10,7 @@ from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, repea
 from transformers.cache_utils import Cache
 import math
 from typing import List
+from pool_methods import pooling_methods, get_top_blocks_regular, compare_divergence
 
 @dataclass
 class Result():
@@ -73,11 +74,11 @@ def custom_forward(
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
     
     # use this
-    # regular_blocks = get_top_blocks_regular(query_states, key_states, block_size)
-    # for method in pooling_methods:
-    #     method_blocks = pooling_methods[method](query_states, key_states, block_size)
-    #     divergence = compare_divergence(regular_blocks, method_blocks, block_size)
-    #     results.append(Result(method, divergence, block_size, self.layer_idx))
+    regular_blocks = get_top_blocks_regular(query_states, key_states, block_size)
+    for method in pooling_methods:
+        method_blocks = pooling_methods[method](query_states, key_states, block_size)
+        divergence = compare_divergence(regular_blocks, method_blocks, block_size)
+        results.append(Result(method, divergence, block_size, self.layer_idx))
     
     attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
     attn_output = torch.matmul(attn_weights, value_states)
