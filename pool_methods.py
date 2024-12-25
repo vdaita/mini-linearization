@@ -5,10 +5,10 @@ def reshape_qkv(query_states, key_states, block_size=16): # (bsz, length, num_he
     B, H, L, D = query_states.shape
     num_chunks = L // block_size
     
-    query_reshaped = query_reshaped.transpose(1, 2)
-    key_reshaped = key_reshaped.transpose(1, 2)
-    query_reshaped = query_states.reshape(B, H, num_chunks, block_size, D)
-    key_reshaped = key_states.reshape(B, H, num_chunks, block_size, D)
+    query_reshaped = query_states.transpose(1, 2)
+    key_reshaped = key_states.transpose(1, 2)
+    query_reshaped = query_reshaped.reshape(B, H, num_chunks, block_size, D)
+    key_reshaped = key_reshaped.reshape(B, H, num_chunks, block_size, D)
     query_reshaped = query_reshaped.reshape(-1, num_chunks, block_size, D)
     key_reshaped = key_reshaped.reshape(-1, num_chunks, block_size, D)
 
@@ -22,7 +22,7 @@ def baseline_pooling(query_states, key_states, block_size): # ->(bsz, num_heads,
     query_states = query_states.reshape(-1, L, D)
     key_states = key_states.reshape(-1, L, D)
     attn_weights = torch.einsum("bnd,bmd->bnm", query_states, key_states)
-    attn_weights = apply_causal_mask(attn_weights, block_size)
+    attn_weights = apply_causal_mask(attn_weights, 1)
     attn_weights = attn_weights.softmax(dim=-1)
     attn_weights = attn_weights.reshape(-1, num_chunks, block_size)
     attn_weights = attn_weights.sum(dim=-1) 
@@ -41,7 +41,6 @@ def expand_blocks(attn_weights, block_size):
     attn_weights = attn_weights.unsqueeze(-2) # B, num_chunks, 1, num_chunks
     attn_weights = attn_weights.repeat(1, 1, block_size, 1) # B, num_chunks, block_size, num_chunks
     attn_weights = attn_weights.reshape(B, num_chunks * block_size, num_chunks)
-    attn_weights = attn_weights.reshape(B, H, -1)
     return attn_weights
 
 def apply_causal_mask(attn_weights, block_size=16):
@@ -49,6 +48,7 @@ def apply_causal_mask(attn_weights, block_size=16):
     mask = torch.triu(torch.ones(L // block_size, L // block_size), diagonal=1).to(attn_weights.device)
     mask = mask.unsqueeze(0)
     mask = mask.repeat(B, 1, 1)
+    mask = mask.to(attn_weights.device)
     return attn_weights.masked_fill(mask == 1, float('-inf'))
 
 def transpose_qkv_back(attention_map, block_size=16):

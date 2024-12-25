@@ -10,7 +10,7 @@ from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, repea
 from transformers.cache_utils import Cache
 import math
 from typing import List
-from pool_methods import pooling_methods, get_top_blocks_regular, compare_divergence
+from pool_methods import pooling_methods, baseline_pooling, compare_divergence
 
 @dataclass
 class Result():
@@ -74,7 +74,7 @@ def custom_forward(
     attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
     
     # use this
-    regular_blocks = get_top_blocks_regular(query_states, key_states, block_size)
+    regular_blocks = baseline_pooling(query_states, key_states, block_size)
     for method in pooling_methods:
         method_blocks = pooling_methods[method](query_states, key_states, block_size)
         divergence = compare_divergence(regular_blocks, method_blocks, block_size)
@@ -102,16 +102,24 @@ def custom_forward(
 
 LlamaAttention.forward = custom_forward
 
-model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="eager") 
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
+
+model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="eager").to(device) 
+print("Finished loading model")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token_id = tokenizer.eos_token_id
-ds = load_dataset(dataset_name, split="950")
+ds = load_dataset(dataset_name, split="250")
 ds = ds.select(list(range(8)))
 
 prompts = ds["prompt"]
 
 num_prompts = len(prompts)
-inputs = tokenizer(prompts, return_tensors="pt", max_length=4096, padding="max_length", truncation=True)
+inputs = tokenizer(prompts, return_tensors="pt", max_length=4096, padding="max_length", truncation=True).to(device)
 outputs = model(**inputs)
     
 with open(f"bsa_results_{block_size}.json", "w+") as f:
