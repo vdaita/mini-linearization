@@ -14,7 +14,6 @@ def reshape_qkv(query_states, key_states, block_size=16): # (bsz, length, num_he
 
     return query_reshaped, key_reshaped
 
-@torch.compile
 def baseline_pooling(query_states, key_states, block_size): # ->(bsz, num_heads, L, num_chunks)
     B, H, L, D = query_states.shape
     num_chunks = L // block_size
