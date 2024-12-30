@@ -101,7 +101,8 @@ def max_pooling(query_states, key_states, block_size):
     B, H, T, D = query_states.shape
     num_chunks = T // block_size
     query_states, key_states = reshape_qkv(query_states, key_states, block_size)
-    query_states, key_states = query_states.max(dim=-2), key_states.max(dim=-2)
+    query_states, _ = query_states.max(dim=-2)
+    key_states, _ = key_states.max(dim=-2)
     attn_weights = torch.einsum("bnd,bmd->bnm", query_states, query_states)
     attn_weights = apply_causal_mask(attn_weights, block_size)
     attn_weights = attn_weights.softmax(dim=-1)
