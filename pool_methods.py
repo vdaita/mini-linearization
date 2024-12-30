@@ -24,7 +24,7 @@ def baseline_pooling(query_states, key_states, block_size): # ->(bsz, num_heads,
     attn_weights = torch.einsum("bnd,bmd->bnm", query_states, key_states)
     # print("Attention weights: ", attn_weights.shape)
     print("Attention weights before applying causal mask: ", attn_weights[0, 3])
-    attn_weights = apply_causal_mask(attn_weights, 1)
+    attn_weights = apply_causal_mask(attn_weights)
     print("Unsoftmaxed original attention weights: ", attn_weights[0, 3])  # first head of first batch
     attn_weights = attn_weights.softmax(dim=-1) # for numerical stability
     print("After softmax: ", attn_weights[0, 3])
@@ -52,9 +52,9 @@ def expand_blocks(attn_weights, block_size):
     attn_weights = attn_weights.reshape(B, num_chunks * block_size, num_chunks)
     return attn_weights
 
-def apply_causal_mask(attn_weights, block_size):
+def apply_causal_mask(attn_weights):
     B, L, _ = attn_weights.shape
-    mask = torch.triu(torch.ones(L // block_size, L // block_size), diagonal=1).to(attn_weights.device)
+    mask = torch.triu(torch.ones(L, L), diagonal=1).to(attn_weights.device)
     mask = mask.unsqueeze(0)
     mask = mask.repeat(B, 1, 1)
     mask = mask.to(attn_weights.device)
@@ -81,8 +81,10 @@ def avg_pooling(query_states, key_states, block_size):
     num_chunks = T // block_size
     query_states, key_states = reshape_qkv(query_states, key_states, block_size)
     query_states, key_states = query_states.mean(dim=-2), key_states.mean(dim=-2)
+    print("QK shape: ", query_states.shape, key_states.shape)
     attn_weights = torch.einsum("bnd,bmd->bnm", query_states, query_states)
-    attn_weights = apply_causal_mask(attn_weights, block_size)
+    print("Attention weights shape: ", attn_weights.shape)
+    attn_weights = apply_causal_mask(attn_weights)
     attn_weights = attn_weights.softmax(dim=-1)
     attn_weights = attn_weights.reshape(B, H, num_chunks, num_chunks)
     return attn_weights
@@ -94,7 +96,7 @@ def softmax_avg_pooling(query_states, key_states, block_size):
     query_states, key_states = query_states.softmax(dim=-1), key_states.softmax(dim=-1)
     query_states, key_states = query_states.mean(dim=-2), key_states.mean(dim=-2)
     attn_weights = torch.einsum("bnd,bmd->bnm", query_states, query_states)
-    attn_weights = apply_causal_mask(attn_weights, block_size)
+    attn_weights = apply_causal_mask(attn_weights)
     attn_weights = attn_weights.softmax(dim=-1)
     attn_weights = attn_weights.reshape(B, H, num_chunks, num_chunks)
     return attn_weights
@@ -106,7 +108,7 @@ def max_pooling(query_states, key_states, block_size):
     query_states, _ = query_states.max(dim=-2)
     key_states, _ = key_states.max(dim=-2)
     attn_weights = torch.einsum("bnd,bmd->bnm", query_states, query_states)
-    attn_weights = apply_causal_mask(attn_weights, block_size)
+    attn_weights = apply_causal_mask(attn_weights)
     attn_weights = attn_weights.softmax(dim=-1)
     attn_weights = attn_weights.reshape(B, H, num_chunks, num_chunks)
     return attn_weights
@@ -119,7 +121,7 @@ def softmax_max_pooling(query_states, key_states, block_size):
     query_states, _ = query_states.max(dim=-2)
     key_states, _ = key_states.max(dim=-2)
     attn_weights = torch.einsum("bnd,bmd->bnm", query_states, query_states)
-    attn_weights = apply_causal_mask(attn_weights, block_size)
+    attn_weights = apply_causal_mask(attn_weights)
     attn_weights = attn_weights.softmax(dim=-1)
     attn_weights = attn_weights.reshape(B, H, num_chunks, num_chunks)
     return attn_weights
@@ -133,7 +135,7 @@ def max_softmax_pooling(query_states, key_states, block_size):
     # print("Query and key states shape: ", query_states.shape, key_states.shape)
     query_states, key_states = query_states.softmax(dim=-1), key_states.softmax(dim=-1)
     # attn_weights = torch.einsum("bnd,bmd->bnm", query_states, query_states)
-    attn_weights = apply_causal_mask(attn_weights, block_size)
+    attn_weights = apply_causal_mask(attn_weights)
     attn_weights = attn_weights.softmax(dim=-1)
     attn_weights = attn_weights.reshape(B, H, num_chunks, num_chunks)
     return attn_weights
