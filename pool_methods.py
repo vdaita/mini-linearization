@@ -15,23 +15,27 @@ def reshape_qkv(query_states, key_states, block_size=16): # (bsz, length, num_he
     return query_reshaped, key_reshaped
 
 def baseline_pooling(query_states, key_states, block_size): # ->(bsz, num_heads, L, num_chunks)
+    print("Query states shape: ", query_states.shape)
     B, H, L, D = query_states.shape
     num_chunks = L // block_size
-    query_states = query_states.transpose(1, 2)
-    key_states = key_states.transpose(1, 2)
-    query_states = query_states.reshape(-1, L, D)
-    key_states = key_states.reshape(-1, L, D)
+
+    query_states, key_states = query_states.reshape(B * H, L, D), key_states.reshape(B * H, L, D)
     # print("Query and key states reshaped to: ", query_states.shape, key_states.shape)
     attn_weights = torch.einsum("bnd,bmd->bnm", query_states, key_states)
     # print("Attention weights: ", attn_weights.shape)
+    print("Attention weights before applying causal mask: ", attn_weights[0, 3])
     attn_weights = apply_causal_mask(attn_weights, 1)
-    attn_weights = attn_weights.log_softmax(dim=-1) # for numerical stability
+    print("Unsoftmaxed original attention weights: ", attn_weights[0, 3])  # first head of first batch
+    attn_weights = attn_weights.softmax(dim=-1) # for numerical stability
+    print("After softmax: ", attn_weights[0, 3])
     # print("Attention weights shape after softmax: ", attn_weights.shape)
     attn_weights = attn_weights.reshape(B, H, L, num_chunks, block_size)
-    # print("Attention weights shape after reshape: ", attn_weights.shape)
+    print("Attention weights shape after reshape: ", attn_weights.shape)
     attn_weights = attn_weights.sum(dim=-1) 
-    # print("Attention weights after the sum: ", attn_weights.shape)
+    print("Attention weights after the sum: ", attn_weights.shape)
     attn_weights = attn_weights.reshape(B, H, L, num_chunks)
+    print("Attention weights after summing: ", attn_weights[0, 3])
+    attn_weights = torch.log(attn_weights)
     return attn_weights
 
 def compute_divergence(baseline, block_probs, block_size):
@@ -48,7 +52,7 @@ def expand_blocks(attn_weights, block_size):
     attn_weights = attn_weights.reshape(B, num_chunks * block_size, num_chunks)
     return attn_weights
 
-def apply_causal_mask(attn_weights, block_size=16):
+def apply_causal_mask(attn_weights, block_size):
     B, L, _ = attn_weights.shape
     mask = torch.triu(torch.ones(L // block_size, L // block_size), diagonal=1).to(attn_weights.device)
     mask = mask.unsqueeze(0)
@@ -56,21 +60,19 @@ def apply_causal_mask(attn_weights, block_size=16):
     mask = mask.to(attn_weights.device)
     return attn_weights.masked_fill(mask == 1, float('-inf'))
 
-def transpose_qkv_back(attention_map, block_size=16):
-    B, H, L, D = attention_map.shape
-    attention_map = attention_map.transpose(1, 2)
-    attention_map = attention_map.reshape(B, L, H * D) 
-    return attention_map
-
 def compare_divergence(top_blocks_regular, top_blocks_generated, block_size):
     B, H, num_chunks, D = top_blocks_generated.shape
     B, H, T, D = top_blocks_regular.shape
-    print("Top blocks generated shape: ", top_blocks_generated.shape)
-    print("Top blocks regular: ", top_blocks_regular.shape)
+    # print("Top blocks generated shape: ", top_blocks_generated.shape)
+    # print("Top blocks regular: ", top_blocks_regular.shape)
     g_reshaped = top_blocks_generated.unsqueeze(3)
     g_reshaped = g_reshaped.repeat_interleave(block_size, dim=2)
     g_reshaped = g_reshaped.reshape(B, H, T, num_chunks)
-    print("G reshaped shape: ", g_reshaped.shape)
+
+    print("Regular distribution for the first token: ", top_blocks_regular[0, 0, 0])
+    print("Generated distribution for the first token: ", top_blocks_generated[0, 0, 0])
+
+    # print("G reshaped shape: ", g_reshaped.shape)
     kl_div = F.kl_div(top_blocks_regular, g_reshaped, reduction='mean')
     return kl_div.item()
 
@@ -128,9 +130,9 @@ def max_softmax_pooling(query_states, key_states, block_size):
     query_states, key_states = reshape_qkv(query_states, key_states, block_size)
     query_states, _ = query_states.max(dim=-2)
     key_states, _ = key_states.max(dim=-2)
-    print("Query and key states shape: ", query_states.shape, key_states.shape)
+    # print("Query and key states shape: ", query_states.shape, key_states.shape)
     query_states, key_states = query_states.softmax(dim=-1), key_states.softmax(dim=-1)
-    attn_weights = torch.einsum("bnd,bmd->bnm", query_states, query_states)
+    # attn_weights = torch.einsum("bnd,bmd->bnm", query_states, query_states)
     attn_weights = apply_causal_mask(attn_weights, block_size)
     attn_weights = attn_weights.softmax(dim=-1)
     attn_weights = attn_weights.reshape(B, H, num_chunks, num_chunks)
@@ -138,8 +140,8 @@ def max_softmax_pooling(query_states, key_states, block_size):
 
 pooling_methods = {
     "avg_pooling": avg_pooling,
-    "max_softmax_pooling": max_softmax_pooling,
-    "softmax_max_pooling": softmax_max_pooling,
-    "softmax_avg_pooling": softmax_avg_pooling,
-    "max_pooling": max_pooling
+    # "max_softmax_pooling": max_softmax_pooling,
+    # "softmax_max_pooling": softmax_max_pooling,
+    # "softmax_avg_pooling": softmax_avg_pooling,
+    # "max_pooling": max_pooling
 }

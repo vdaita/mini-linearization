@@ -118,11 +118,12 @@ print("Finished loading model")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token_id = tokenizer.eos_token_id
 ds = load_dataset(dataset_name, split="250")
-ds = ds.select(list(range(8)))
+ds = ds.select(list(range(1)))
 
 prompts = ds["prompt"]
 
 for prompt in prompts:
+    print(prompt)
     inputs = tokenizer([prompt], return_tensors="pt", max_length=4096, padding="max_length", truncation=True).to(device)
     outputs = model(**inputs)
 
