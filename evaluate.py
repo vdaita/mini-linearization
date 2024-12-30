@@ -117,15 +117,17 @@ model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="sd
 print("Finished loading model")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token_id = tokenizer.eos_token_id
-ds = load_dataset(dataset_name, split="250")
+ds = load_dataset(dataset_name, split="100")
 ds = ds.select(list(range(1)))
 
 prompts = ds["prompt"]
 
-for prompt in prompts:
-    print(prompt)
-    inputs = tokenizer([prompt], return_tensors="pt", max_length=4096, padding="max_length", truncation=True).to(device)
-    outputs = model(**inputs)
+torch.set_printoptions(sci_mode=False)
+with torch.no_grad():
+    for prompt in prompts:
+        print(prompt)
+        inputs = tokenizer([prompt], return_tensors="pt", max_length=1024, padding="max_length", truncation=True).to(device)
+        outputs = model(**inputs)
 
 with open(f"bsa_results_{block_size}.json", "w+") as f:
     f.write(json.dumps([result.__dict__ for result in results], indent=2))

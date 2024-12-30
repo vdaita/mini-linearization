@@ -23,19 +23,24 @@ def baseline_pooling(query_states, key_states, block_size): # ->(bsz, num_heads,
     # print("Query and key states reshaped to: ", query_states.shape, key_states.shape)
     attn_weights = torch.einsum("bnd,bmd->bnm", query_states, key_states)
     # print("Attention weights: ", attn_weights.shape)
-    print("Attention weights before applying causal mask: ", attn_weights[0, 3])
+    print("Attention weights before applying causal mask: ", attn_weights[0, -1])
     attn_weights = apply_causal_mask(attn_weights)
-    print("Unsoftmaxed original attention weights: ", attn_weights[0, 3])  # first head of first batch
-    attn_weights = attn_weights.softmax(dim=-1) # for numerical stability
-    print("After softmax: ", attn_weights[0, 3])
+    print("Unsoftmaxed original attention weights: ", attn_weights[0, -1])  # first head of first batch
+    print("Softmaxing manually: ", attn_weights[0, -1].softmax(dim=-1))
+    attn_weights = attn_weights.softmax(dim=-1)
+    print("After softmax: ", attn_weights[0, -1])
+    print("After softmax shape: ", attn_weights.shape)
     # print("Attention weights shape after softmax: ", attn_weights.shape)
-    attn_weights = attn_weights.reshape(B, H, L, num_chunks, block_size)
+    attn_weights = attn_weights.reshape(B * H, L, num_chunks, block_size)
+    print("Attention weights values after reshape: ", attn_weights[0, -1])
     print("Attention weights shape after reshape: ", attn_weights.shape)
     attn_weights = attn_weights.sum(dim=-1) 
     print("Attention weights after the sum: ", attn_weights.shape)
-    attn_weights = attn_weights.reshape(B, H, L, num_chunks)
-    print("Attention weights after summing: ", attn_weights[0, 3])
+    attn_weights = attn_weights.reshape(B * H, L, num_chunks)
+    print("Attention weights after summing: ", attn_weights[0, -1])
     attn_weights = torch.log(attn_weights)
+    print("Attention weights after logging: ", attn_weights[0, -1])
+    attn_weights = attn_weights.reshape(B, H, L, num_chunks)
     return attn_weights
 
 def compute_divergence(baseline, block_probs, block_size):
@@ -65,15 +70,84 @@ def compare_divergence(top_blocks_regular, top_blocks_generated, block_size):
     B, H, T, D = top_blocks_regular.shape
     # print("Top blocks generated shape: ", top_blocks_generated.shape)
     # print("Top blocks regular: ", top_blocks_regular.shape)
-    g_reshaped = top_blocks_generated.unsqueeze(3)
-    g_reshaped = g_reshaped.repeat_interleave(block_size, dim=2)
-    g_reshaped = g_reshaped.reshape(B, H, T, num_chunks)
+    print("Starting top blocks generated shape: ", top_blocks_generated.shape)
+    # top_blocks_generated = top_blocks_generated.unsqueeze(3)
+    print("After unsqueeze: ", top_blocks_generated.shape)
+    top_blocks_generated = top_blocks_generated.repeat(1, 1, 1, block_size)
+    print("After repeat: ", top_blocks_generated.shape)
+    top_blocks_generated = top_blocks_generated.reshape(B, H, num_chunks * block_size, num_chunks)
+    print("Top blocks generated: ", top_blocks_generated.shape)
 
-    print("Regular distribution for the first token: ", top_blocks_regular[0, 0, 0])
-    print("Generated distribution for the first token: ", top_blocks_generated[0, 0, 0])
+    top_blocks_regular = torch.where(
+        top_blocks_regular == -float("inf"),
+        torch.full_like(top_blocks_regular, -1e10),
+        top_blocks_regular,
+    )
+
+    # top_blocks_generated = torch.where(
+    #     top_blocks_generated == 0,
+    #     torch.full_like(top_blocks_generated, 1e10),
+    #     top_blocks_generated
+    # )
+
+    # print("Regular distribution for the first token: ", top_blocks_regular[0, 0, 0])
+    # print("Generated distribution for the first token: ", top_blocks_generated[0, 0, 0])
+
+    # print("Top blocks regular shape: ", top_blocks_regular.shape)
+    # print("Top blocks generated shape: ", top_blocks_generated.shape)
+
+    # for i in range(100):
+    #     print(
+    #         "Item values: Regular: ",
+    #         top_blocks_regular[0, 0, i * 16],
+    #         " Generated: ",
+    #         top_blocks_generated[0, 0, i * 16],
+    #         top_blocks_generated[0, 0, i * 16].sum(),
+    #     )
+    #     print(
+    #         "KL divergence for token at index: ",
+    #         i * 16,
+    #         F.kl_div(
+    #             top_blocks_regular[0, 0, i * 16],
+    #             top_blocks_generated[0, 0, i * 16],
+    #             reduction="mean",
+    #         )
+    #     )
 
     # print("G reshaped shape: ", g_reshaped.shape)
-    kl_div = F.kl_div(top_blocks_regular, g_reshaped, reduction='mean')
+    top_blocks_regular = top_blocks_regular.reshape(-1, num_chunks)
+    top_blocks_generated = top_blocks_generated.reshape(-1, num_chunks)
+
+    print("Regular shape: ", top_blocks_regular.shape, " Generated shape: ", top_blocks_generated.shape)
+    kl_divergences = torch.zeros((top_blocks_regular.shape[0]))
+    for i in range(top_blocks_regular.shape[0]):
+        kl_divergences[i] = F.kl_div(top_blocks_regular[i], top_blocks_generated[i])
+
+    # T - 1 gives us the (0, 1) index we were using for debugging before
+    print(
+        "Regular distribution: ",
+        top_blocks_regular[T - 1],
+        "\n Exponential of regular distribution: ",
+        torch.exp(top_blocks_regular[T - 1]),
+        "\nSum of regular distribution exponential: ",
+        torch.exp(top_blocks_regular[T - 1]).sum(),
+        "\nGenerated blocks: ",
+        top_blocks_generated[T-1],
+        "\nGenerated blocks sum: ",
+        top_blocks_generated[T-1].sum(),
+        "\nKL Divergence: ",
+        kl_divergences[T-1],
+    )
+    print("KL Divergence Maximum Value: ", torch.max(kl_divergences))
+    max_kldiv_index = torch.argmax(kl_divergences)
+    print("KL div index: ", max_kldiv_index, max_kldiv_index / (B * H), max_kldiv_index % (B * H))
+    print("Top blocks regular: ", top_blocks_regular[max_kldiv_index])
+    print("Exp: ", torch.exp(top_blocks_regular[max_kldiv_index]))
+    print("Top blocks generated", top_blocks_generated[max_kldiv_index])
+    print("KL Divergence Mean: ", torch.mean(kl_divergences))
+
+    kl_div = F.kl_div(top_blocks_regular, top_blocks_generated, reduction="batchmean")
+    print("KL Divergence: ", kl_div)
     return kl_div.item()
 
 def avg_pooling(query_states, key_states, block_size):
