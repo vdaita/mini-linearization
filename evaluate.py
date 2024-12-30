@@ -6,7 +6,7 @@ from tqdm import tqdm
 from dataclasses import dataclass
 from torch import nn
 from typing import Optional, Tuple
-from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, repeat_kv, LlamaAttention
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, repeat_kv, LlamaAttention, LlamaSdpaAttention
 from transformers.cache_utils import Cache
 import math
 from typing import List
@@ -19,13 +19,14 @@ class Result():
     block_size: int
     layer_index: int
 
-model_name = "unsloth/Llama-3.2-1B-Instruct"
+# model_name = "unsloth/Llama-3.2-1B-Instruct" # for when the regular model is inaccessible
+model_name = "meta-llama/Llama-3.2-1B-Instruct"
 dataset_name = "abacusai/LongChat-Lines"
 block_size = 64
 
 results: List[Result] = []
 
-@torch.compile
+# @torch.compile
 def custom_forward(
     self,
     hidden_states: torch.Tensor,
@@ -38,7 +39,9 @@ def custom_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    global results
+    if output_attentions:
+        raise NotImplementedError()
+
     bsz, q_len, _ = hidden_states.size()
 
     query_states = self.q_proj(hidden_states)
@@ -63,45 +66,45 @@ def custom_forward(
 
     key_states = repeat_kv(key_states, self.num_key_value_groups)
     value_states = repeat_kv(value_states, self.num_key_value_groups)
-    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-    print("Shapes: ", query_states.shape, key_states.shape, attn_weights.shape)
+    causal_mask = attention_mask
+    if attention_mask is not None:
+        causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
 
-    if attention_mask is not None:  # no matter the length, we just slice it
-        causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        attn_weights = attn_weights + causal_mask
+    # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
+    # Reference: https://github.com/pytorch/pytorch/issues/112577.
+    if query_states.device.type == "cuda" and causal_mask is not None:
+        query_states = query_states.contiguous()
+        key_states = key_states.contiguous()
+        value_states = value_states.contiguous()
 
-    # upcast attention to fp32
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-    
-    # use this
-    # regular_blocks = baseline_pooling(query_states, key_states, block_size)
+    regular_blocks = baseline_pooling(query_states, key_states, block_size)
     for method in pooling_methods:
         method_blocks = pooling_methods[method](query_states, key_states, block_size)
-        # divergence = compare_divergence(regular_blocks, method_blocks, block_size)
-        # results.append(Result(method, divergence, block_size, self.layer_idx))
-    
-    attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-    attn_output = torch.matmul(attn_weights, value_states)
+        divergence = compare_divergence(regular_blocks, method_blocks, block_size)
+        results.append(Result(method, divergence, block_size, self.layer_idx))
 
-    if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
-        raise ValueError(
-            f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
-            f" {attn_output.size()}"
-        )
+    # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
+    # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
+    is_causal = True if causal_mask is None and q_len > 1 else False
+
+    attn_output = torch.nn.functional.scaled_dot_product_attention(
+        query_states,
+        key_states,
+        value_states,
+        attn_mask=causal_mask,
+        dropout_p=self.attention_dropout if self.training else 0.0,
+        is_causal=is_causal,
+    )
 
     attn_output = attn_output.transpose(1, 2).contiguous()
-
-    attn_output = attn_output.reshape(bsz, q_len, -1)
+    attn_output = attn_output.view(bsz, q_len, -1)
 
     attn_output = self.o_proj(attn_output)
 
-    if not output_attentions:
-        attn_weights = None
+    return attn_output, None, past_key_value
 
-    return attn_output, attn_weights, past_key_value
-
-LlamaAttention.forward = custom_forward
+LlamaSdpaAttention.forward = custom_forward
 
 if torch.cuda.is_available():
     device = torch.device("cuda")
@@ -119,9 +122,9 @@ ds = ds.select(list(range(8)))
 
 prompts = ds["prompt"]
 
-num_prompts = len(prompts)
-inputs = tokenizer(prompts, return_tensors="pt", max_length=4096, padding="max_length", truncation=True).to(device)
-outputs = model(**inputs)
-    
+for prompt in prompts:
+    inputs = tokenizer([prompt], return_tensors="pt", max_length=4096, padding="max_length", truncation=True).to(device)
+    outputs = model(**inputs)
+
 with open(f"bsa_results_{block_size}.json", "w+") as f:
     f.write(json.dumps([result.__dict__ for result in results], indent=2))
