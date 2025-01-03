@@ -10,21 +10,16 @@ from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, repea
 from transformers.cache_utils import Cache
 import math
 from typing import List
-from pool_methods import pooling_methods, baseline_pooling, compare_divergence
-
-@dataclass
-class Result():
-    method_name: str
-    divergence: float
-    block_size: int
-    layer_index: int
+from pool_methods import evaluate_methods, methods
 
 # model_name = "unsloth/Llama-3.2-1B-Instruct" # for when the regular model is inaccessible
 model_name = "meta-llama/Llama-3.2-1B-Instruct"
-dataset_name = "abacusai/LongChat-Lines"
 block_size = 64
-
-results: List[Result] = []
+results = {
+    method: torch.empty(0) for method in methods
+}
+num_examples_processed = 0
+dataset_name = "THUDM/LongBench-v2"
 
 # @torch.compile
 def custom_forward(
@@ -39,6 +34,7 @@ def custom_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    global results, num_examples_processed
     if output_attentions:
         raise NotImplementedError()
 
@@ -78,11 +74,16 @@ def custom_forward(
         key_states = key_states.contiguous()
         value_states = value_states.contiguous()
 
-    regular_blocks = baseline_pooling(query_states, key_states, block_size)
-    for method in pooling_methods:
-        method_blocks = pooling_methods[method](query_states, key_states, block_size)
-        divergence = compare_divergence(regular_blocks, method_blocks, block_size)
-        results.append(Result(method, divergence, block_size, self.layer_idx))
+    batch_results = evaluate_methods(query_states, key_states, block_size)
+    for method in batch_results:
+        if num_examples_processed == 0:
+            results[method] = batch_results[method]
+        else:
+            results[method] = \
+                results[method] * (num_examples_processed / (num_examples_processed + bsz)) + \
+                batch_results[method] * (bsz / (num_examples_processed + bsz))
+        
+    # Need to add this result to the results
 
     # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
     # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
@@ -118,15 +119,31 @@ print("Finished loading model")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token_id = tokenizer.eos_token_id
 ds = load_dataset(dataset_name, split="100")
+ds = ds.filter(lambda x: x["length"] == "medium", ds)
 ds = ds.select(list(range(1)))
+ds = ds.to_pandas()
+num_tokens = 64000
 
-prompts = ds["prompt"]
+for result in results:
+    results[result] = results[result].tolist()
 
 torch.set_printoptions(sci_mode=False)
 with torch.no_grad():
-    for prompt in prompts:
-        print(prompt)
-        inputs = tokenizer([prompt], return_tensors="pt", max_length=1024, padding="max_length", truncation=True).to(device)
+    for row in ds:
+        start_chunk = row["question"]
+        choice_a = row["choice_A"]
+        choice_b = row["choice_B"]
+        choice_c = row["choice_C"]
+        choice_d = row["choice_D"]
+
+        question = f"Choice A: {choice_a}\nChoice B: {choice_b}\nChoice C: {choice_c}\nChoice D: {choice_d}\n"
+        required_tokens = len(tokenizer.encode(start_chunk + "\n" + question))
+        
+        encoded_document = tokenizer.encode(row["context"])
+        truncated_document = tokenizer.decode(encoded_document[:required_tokens])
+        prompt = f"{start_chunk}\n{truncated_document}\n{question}"
+
+        inputs = tokenizer([prompt], return_tensors="pt", max_length=num_tokens, padding="max_length", truncation=True).to(device)
         outputs = model(**inputs)
 
 with open(f"bsa_results_{block_size}.json", "w+") as f:

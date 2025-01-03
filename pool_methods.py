@@ -4,8 +4,8 @@ from rich import print
 # Get terminal width
 terminal_width = os.get_terminal_size().columns
 torch.set_printoptions(linewidth=terminal_width, sci_mode=False, precision=4)
-
 torch.manual_seed(42)
+
 
 def apply_causal_mask(attn_weights):
     B, L, _ = attn_weights.shape
@@ -89,6 +89,14 @@ def softmax_max_min_attention(q, k, block_size):
     attn_weights = attn_weights.softmax(dim=-1)
     return attn_weights
 
+methods = {
+    "averaged": averaged_attention,
+    "softmax_averaged": softmax_averaged_attention,
+    "max": max_attention,
+    "softmax_max": softmax_max_attention,
+    "max_min": max_min_attention,
+    "softmax_max_min": softmax_max_min_attention
+}
 
 @torch.compile
 def comparison_score(baseline_weights, averaged_weights, q):
@@ -152,15 +160,6 @@ def evaluate_methods(q, k, block_size):
     # print("baseline weights shape: ", baseline_weights.shape)
     # print("baseline weights with mean: ", baseline_weights)
     # print("averaged weights: ", averaged_weights)
-
-    methods = {
-        "averaged": averaged_attention,
-        "softmax_averaged": softmax_averaged_attention,
-        "max": max_attention,
-        "softmax_max": softmax_max_attention,
-        "max_min": max_min_attention,
-        "softmax_max_min": softmax_max_min_attention
-    }
     
     results = {
     }
