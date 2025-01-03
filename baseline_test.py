@@ -6,16 +6,6 @@ torch.set_printoptions(linewidth=terminal_width, sci_mode=False, precision=4)
 
 torch.manual_seed(42)
 
-B = 1
-H = 32
-T = 4096
-D = 64
-
-block_size = 16
-
-test_q = torch.randn(B, H, T, D)
-test_k = torch.randn(B, H, T, D)
-
 def apply_causal_mask(attn_weights):
     B, L, _ = attn_weights.shape
     mask = torch.triu(torch.ones(L, L), diagonal=1).to(attn_weights.device)
@@ -49,26 +39,9 @@ def averaged_attention(q, k):
     return attn_weights
 
 @torch.compile
-def compare_attention(q, k):
+def comparison_score(baseline_weights, averaged_weights, q):
     B, H, T, D = q.shape
     num_chunks = T // block_size
-
-    baseline_weights = baseline_attention(q, k)
-    averaged_weights = averaged_attention(q, k)
-
-    # print("baseline weights: ", baseline_weights)
-
-    baseline_weights = baseline_weights.reshape(B * H, T, num_chunks, block_size)
-    baseline_weights = baseline_weights.sum(dim=-1)
-    
-    baseline_diag_fill_indices_x = torch.arange(T)
-    baseline_diag_fill_indices_y = torch.arange(num_chunks).repeat_interleave(block_size)
-    baseline_weights[:, baseline_diag_fill_indices_x, baseline_diag_fill_indices_y] = 0
-    baseline_weights = baseline_weights / (baseline_weights.sum(dim=-1, keepdim=True) + 1e-8)
-
-    # print("baseline weights shape: ", baseline_weights.shape)
-    # print("baseline weights with mean: ", baseline_weights)
-    # print("averaged weights: ", averaged_weights)
 
     num_selected = num_chunks
     averaged_diag_fill_indices_x = torch.arange(num_chunks)
@@ -106,6 +79,49 @@ def compare_attention(q, k):
     # print("Overall mean weight percentage met: ", weight_percentage_met, " with shape: ", weight_percentage_met.shape)
 
     print("Weight percentage met: ", weight_percentage_met)
+    return weight_percentage_met
+
+def evaluate_methods(q, k, block_size):
+    B, H, T, D = q.shape
+    num_chunks = T // block_size
+    baseline_weights = baseline_attention(q, k)
+
+    # print("baseline weights: ", baseline_weights)
+
+    baseline_weights = baseline_weights.reshape(B * H, T, num_chunks, block_size)
+    baseline_weights = baseline_weights.sum(dim=-1)
+    
+    baseline_diag_fill_indices_x = torch.arange(T)
+    baseline_diag_fill_indices_y = torch.arange(num_chunks).repeat_interleave(block_size)
+    baseline_weights[:, baseline_diag_fill_indices_x, baseline_diag_fill_indices_y] = 0
+    baseline_weights = baseline_weights / (baseline_weights.sum(dim=-1, keepdim=True) + 1e-8)
+
+    # print("baseline weights shape: ", baseline_weights.shape)
+    # print("baseline weights with mean: ", baseline_weights)
+    # print("averaged weights: ", averaged_weights)
+
+    methods = {
+        "averaged": averaged_attention
+    }
+    
+    results = {
+    }
+
+    for method in methods:
+        print(f"Running {method} method")
+        method_weights = methods[method](q, k)
+        results[method] = comparison_score(baseline_weights, method_weights, q, k)
+
+    return results
 
 if __name__ == '__main__':
-    compare_attention(test_q, test_k)
+    B = 1
+    H = 32
+    T = 4096
+    D = 64
+
+    block_size = 16
+
+    test_q = torch.randn(B, H, T, D)
+    test_k = torch.randn(B, H, T, D)
+    evaluate_methods(test_q, test_k, block_size)
