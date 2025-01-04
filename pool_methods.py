@@ -71,25 +71,6 @@ def softmax_averaged_attention(q, k, block_size):
     attn_weights = attn_weights.softmax(dim=-1)
     return attn_weights
 
-def max_attention(q, k, block_size):
-    q, k = reshape_qk(q, k, block_size)
-    q, _ = q.max(dim=-2)
-    k, _ = k.max(dim=-2)
-    attn_weights = torch.einsum("bnd,bmd->bnm", q, k)
-    attn_weights = apply_causal_mask(attn_weights)
-    attn_weights = attn_weights.softmax(dim=-1)
-    return attn_weights
-
-def softmax_max_attention(q, k, block_size):
-    q, k = reshape_qk(q, k, block_size)
-    q, k = q.softmax(dim=-1), k.softmax(dim=-1)
-    q, _ = q.max(dim=-2)
-    k, _ = k.max(dim=-2)
-    attn_weights = torch.einsum("bnd,bmd->bnm", q, k)
-    attn_weights = apply_causal_mask(attn_weights)
-    attn_weights = attn_weights.softmax(dim=-1)
-    return attn_weights
-
 def max_min_attention(q, k, block_size):
     q, k = reshape_qk(q, k, block_size)
     q = torch.cat([q.max(dim=-2)[0], q.min(dim=-2)[0]], dim=-1)
@@ -99,23 +80,62 @@ def max_min_attention(q, k, block_size):
     attn_weights = attn_weights.softmax(dim=-1)
     return attn_weights
 
-def softmax_max_min_attention(q, k, block_size):
-    q, k = reshape_qk(q, k, block_size)
-    q, k = q.softmax(dim=-1), k.softmax(dim=-1)
-    q = torch.cat([q.max(dim=-2)[0], q.min(dim=-2)[0]], dim=-1)
-    k = torch.cat([k.max(dim=-2)[0], k.min(dim=-2)[0]], dim=-1)
-    attn_weights = torch.einsum("bnd,bmd->bnm", q, k)
-    attn_weights = apply_causal_mask(attn_weights)
-    attn_weights = attn_weights.softmax(dim=-1)
-    return attn_weights
+def generate_chunked_max_min_average_function(chunk_size):
+    def chunked_max_min_average_attention(q, k, block_size):
+        if block_size % chunk_size != 0:
+            raise ValueError("Block size must be a multiple of chunk_size")
+
+        q, k = reshape_qk(q, k, chunk_size)
+        q = torch.cat([q.max(dim=-2)[0], q.min(dim=-2)[0]], dim=-1)
+        k = torch.cat([k.max(dim=-2)[0], k.min(dim=-2)[0]], dim=-1)
+        # print(q.shape)
+        BH, num_chunks, D = q.shape
+        q = q.reshape(BH, num_chunks // (block_size // chunk_size), (block_size // chunk_size), D)
+        k = k.reshape(BH, num_chunks // (block_size // chunk_size), (block_size // chunk_size), D)
+        # print(q.shape)
+        q, k = q.mean(dim=-2), k.mean(dim=-2)
+        attn_weights = torch.einsum("bnd, bmd->bnm", q, k)
+        attn_weights = apply_causal_mask(attn_weights)
+        attn_weights = attn_weights.softmax(dim=-1)
+        return attn_weights
+    return chunked_max_min_average_attention
+
+
+def generate_chunked_average_max_min_attention(chunk_size):
+    def chunked_average_max_min_attention(q, k, block_size):
+        if block_size % chunk_size != 0:
+            raise ValueError("Block size must be a multiple of chunk_size")
+
+        q, k = reshape_qk(q, k, chunk_size)
+        # print(q.shape)
+        q, k = q.mean(dim=-2), k.mean(dim=-2)
+        BH, num_chunks, D = q.shape
+        q = q.reshape(
+            BH, num_chunks // (block_size // chunk_size), (block_size // chunk_size), D
+        )
+        k = k.reshape(
+            BH, num_chunks // (block_size // chunk_size), (block_size // chunk_size), D
+        )
+        q = torch.cat([q.max(dim=-2)[0], q.min(dim=-2)[0]], dim=-1)
+        k = torch.cat([k.max(dim=-2)[0], k.min(dim=-2)[0]], dim=-1)
+
+        attn_weights = torch.einsum("bnd, bmd->bnm", q, k)
+        attn_weights = apply_causal_mask(attn_weights)
+        attn_weights = attn_weights.softmax(dim=-1)
+        return attn_weights
+    return chunked_average_max_min_attention
+
 
 methods = {
     "averaged": averaged_attention,
     "softmax_averaged": softmax_averaged_attention,
-    "max": max_attention,
-    "softmax_max": softmax_max_attention,
     "max_min": max_min_attention,
-    "softmax_max_min": softmax_max_min_attention
+    "chunked_max_min_average, chunk_size=16": generate_chunked_max_min_average_function(16),
+    "chunked_max_min_average, chunk_size=8": generate_chunked_max_min_average_function(8),
+    "chunked_max_min_average, chunk_size=4": generate_chunked_max_min_average_function(4),
+    "chunked_average_max_min, chunk_size=16": generate_chunked_average_max_min_attention(16),
+    "chunked_average_max_min, chunk_size=8": generate_chunked_average_max_min_attention(8),
+    "chunked_average_max_min, chunk_size=4": generate_chunked_average_max_min_attention(4),
 }
 
 # @torch.compile
@@ -161,7 +181,7 @@ def comparison_score(baseline_weights, averaged_weights, q, block_size):
     return weight_percentage_met
 
 
-@torch.compile
+# @torch.compile
 def evaluate_methods(q, k, block_size):
     B, H, T, D = q.shape
     num_chunks = T // block_size
@@ -185,7 +205,7 @@ def evaluate_methods(q, k, block_size):
 if __name__ == '__main__':
     B = 1
     H = 32
-    T = 64 * 256
+    T = 64 * 8
     D = 64
 
     block_size = 64

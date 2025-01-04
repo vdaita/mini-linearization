@@ -125,6 +125,7 @@ print("Finished loading model")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token_id = tokenizer.eos_token_id
 ds = load_dataset(dataset_name, split="train")
+ds = ds.shuffle()
 ds = ds.filter(lambda x: x["length"] == "long")
 ds = ds.select(list(range(100)))
 ds = ds.to_pandas()
