@@ -1,8 +1,15 @@
 import torch
 import os
 from rich import print
+import shutil
+
 # Get terminal width
-terminal_width = os.get_terminal_size().columns
+try:
+    terminal_width = os.get_terminal_size().columns
+except OSError:
+    # Fallback to a default width if a terminal is not attached
+    terminal_width = shutil.get_terminal_size(fallback=(80, 20)).columns
+
 torch.set_printoptions(linewidth=terminal_width, sci_mode=False, precision=4)
 torch.manual_seed(42)
 
