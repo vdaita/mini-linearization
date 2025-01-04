@@ -31,7 +31,7 @@ def baseline_attention(q, k, block_size):
     baseline_diag_fill_indices_x = torch.arange(T)
     baseline_diag_fill_indices_y = torch.arange(num_chunks).repeat_interleave(block_size)
     attn_weights[:, baseline_diag_fill_indices_x, baseline_diag_fill_indices_y] = 0
-    
+
     denominator = attn_weights.sum(dim=-1, keepdim=True)
     denominator = torch.where(denominator == 0, torch.tensor(1.0, device=attn_weights.device), denominator)
     attn_weights = attn_weights / denominator

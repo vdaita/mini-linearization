@@ -21,7 +21,7 @@ results = {
 }
 num_example_chunks_processed = 0
 dataset_name = "THUDM/LongBench-v2"
-head_chunk_size = 4
+head_chunk_size = 1
 
 # @torch.compile
 def custom_forward(
@@ -77,8 +77,9 @@ def custom_forward(
         value_states = value_states.contiguous()
 
     for chunk_start in range(0, bsz, head_chunk_size):
-        query_states_segment = query_states[chunk_start:chunk_start + head_chunk_size]
-        key_states_segment = key_states[chunk_start:chunk_start + head_chunk_size]
+        query_states_segment = query_states[:, chunk_start:chunk_start + head_chunk_size, ...]
+        key_states_segment = key_states[:, chunk_start:chunk_start + head_chunk_size, ...]
+        # print("Query: ", query_states_segment.shape, "Key: ", key_states_segment.shape)
         batch_results = evaluate_methods(query_states_segment, key_states_segment, block_size)
         for method in batch_results:
             if num_example_chunks_processed == 0:
@@ -88,6 +89,7 @@ def custom_forward(
                     num_example_chunks_processed / (num_example_chunks_processed + bsz)
                 ) + batch_results[method] * (bsz / (num_example_chunks_processed + bsz))
         num_example_chunks_processed += 1
+        torch.cuda.synchronize()
 
     # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
     # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
@@ -123,36 +125,48 @@ print("Finished loading model")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token_id = tokenizer.eos_token_id
 ds = load_dataset(dataset_name, split="train")
-ds = ds.filter(lambda x: x["length"] == "medium")
-ds = ds.select(list(range(1)))
+ds = ds.filter(lambda x: x["length"] == "long")
+ds = ds.select(list(range(100)))
 ds = ds.to_pandas()
 # print(ds)
 # num_tokens = 64 * 256
-num_tokens = 64 * 1024
+num_tokens = 64 * 500
 
 torch.set_printoptions(sci_mode=False)
 with torch.no_grad():
     for _, row in tqdm(ds.iterrows()):
-        start_chunk = row["question"]
+        question = row["question"]
         choice_a = row["choice_A"]
         choice_b = row["choice_B"]
         choice_c = row["choice_C"]
         choice_d = row["choice_D"]
 
-        question = f"Choice A: {choice_a}\nChoice B: {choice_b}\nChoice C: {choice_c}\nChoice D: {choice_d}\n"
-        required_tokens = len(tokenizer.encode(start_chunk + "\n" + question))
+        question = f"Question: {question}\nChoice A: {choice_a}\nChoice B: {choice_b}\nChoice C: {choice_c}\nChoice D: {choice_d}\n"
+        required_tokens = len(tokenizer.encode(question))
 
-        document_text = json.loads(row["context"])["doc"]
+        document_text = row["context"]
         encoded_document = tokenizer.encode(document_text)
         truncated_document = tokenizer.decode(encoded_document[:(num_tokens - required_tokens)])
-        prompt = f"{start_chunk}\n{truncated_document}\n{question}"
+        prompt = f"{truncated_document}\n{question}"
+        prompt = tokenizer.apply_chat_template([
+            {
+                "role": "system",
+                "content": "You are an intelligent assistant.",
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ], tokenize=False, add_generation_prompt=True)
 
         prompt_tokens_length = len(tokenizer.encode(prompt))
+        # print("Prompt tokens length: ", prompt_tokens_length)
         if prompt_tokens_length < num_tokens:
             print("Prompt tokens length less than num tokens")
-
-        inputs = tokenizer([prompt], return_tensors="pt", max_length=num_tokens, padding="max_length", truncation=True).to(device)
+        
+        inputs = tokenizer([prompt], return_tensors="pt", max_length=num_tokens, padding="max_length", truncation=True).to(device)       
         outputs = model(**inputs)
+        torch.cuda.synchronize()
 
 for result in results:
     results[result] = results[result].tolist()
