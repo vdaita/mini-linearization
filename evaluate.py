@@ -11,6 +11,7 @@ from transformers.cache_utils import Cache
 import math
 from typing import List
 from pool_methods import evaluate_methods, methods
+from tqdm import tqdm
 
 # model_name = "unsloth/Llama-3.2-1B-Instruct" # for when the regular model is inaccessible
 model_name = "meta-llama/Llama-3.2-1B-Instruct"
@@ -18,8 +19,9 @@ block_size = 64
 results = {
     method: torch.empty(0) for method in methods
 }
-num_examples_processed = 0
+num_example_chunks_processed = 0
 dataset_name = "THUDM/LongBench-v2"
+head_chunk_size = 4
 
 # @torch.compile
 def custom_forward(
@@ -34,7 +36,7 @@ def custom_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    global results, num_examples_processed
+    global results, num_example_chunks_processed
     if output_attentions:
         raise NotImplementedError()
 
@@ -74,16 +76,18 @@ def custom_forward(
         key_states = key_states.contiguous()
         value_states = value_states.contiguous()
 
-    batch_results = evaluate_methods(query_states, key_states, block_size)
-    for method in batch_results:
-        if num_examples_processed == 0:
-            results[method] = batch_results[method]
-        else:
-            results[method] = \
-                results[method] * (num_examples_processed / (num_examples_processed + bsz)) + \
-                batch_results[method] * (bsz / (num_examples_processed + bsz))
-        
-    # Need to add this result to the results
+    for chunk_start in range(0, bsz, head_chunk_size):
+        query_states_segment = query_states[chunk_start:chunk_start + head_chunk_size]
+        key_states_segment = key_states[chunk_start:chunk_start + head_chunk_size]
+        batch_results = evaluate_methods(query_states_segment, key_states_segment, block_size)
+        for method in batch_results:
+            if num_example_chunks_processed == 0:
+                results[method] = batch_results[method]
+            else:
+                results[method] = results[method] * (
+                    num_example_chunks_processed / (num_example_chunks_processed + bsz)
+                ) + batch_results[method] * (bsz / (num_example_chunks_processed + bsz))
+        num_example_chunks_processed += 1
 
     # We dispatch to SDPA's Flash Attention or Efficient kernels via this `is_causal` if statement instead of an inline conditional assignment
     # in SDPA to support both torch.compile's dynamic shapes and full graph options. An inline conditional prevents dynamic shapes from compiling.
@@ -118,18 +122,17 @@ model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="sd
 print("Finished loading model")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token_id = tokenizer.eos_token_id
-ds = load_dataset(dataset_name, split="100")
-ds = ds.filter(lambda x: x["length"] == "medium", ds)
+ds = load_dataset(dataset_name, split="train")
+ds = ds.filter(lambda x: x["length"] == "medium")
 ds = ds.select(list(range(1)))
 ds = ds.to_pandas()
-num_tokens = 64000
-
-for result in results:
-    results[result] = results[result].tolist()
+# print(ds)
+# num_tokens = 64 * 256
+num_tokens = 64 * 1024
 
 torch.set_printoptions(sci_mode=False)
 with torch.no_grad():
-    for row in ds:
+    for _, row in tqdm(ds.iterrows()):
         start_chunk = row["question"]
         choice_a = row["choice_A"]
         choice_b = row["choice_B"]
@@ -138,13 +141,21 @@ with torch.no_grad():
 
         question = f"Choice A: {choice_a}\nChoice B: {choice_b}\nChoice C: {choice_c}\nChoice D: {choice_d}\n"
         required_tokens = len(tokenizer.encode(start_chunk + "\n" + question))
-        
-        encoded_document = tokenizer.encode(row["context"])
-        truncated_document = tokenizer.decode(encoded_document[:required_tokens])
+
+        document_text = json.loads(row["context"])["doc"]
+        encoded_document = tokenizer.encode(document_text)
+        truncated_document = tokenizer.decode(encoded_document[:(num_tokens - required_tokens)])
         prompt = f"{start_chunk}\n{truncated_document}\n{question}"
+
+        prompt_tokens_length = len(tokenizer.encode(prompt))
+        if prompt_tokens_length < num_tokens:
+            print("Prompt tokens length less than num tokens")
 
         inputs = tokenizer([prompt], return_tensors="pt", max_length=num_tokens, padding="max_length", truncation=True).to(device)
         outputs = model(**inputs)
 
+for result in results:
+    results[result] = results[result].tolist()
+
 with open(f"bsa_results_{block_size}.json", "w+") as f:
-    f.write(json.dumps([result.__dict__ for result in results], indent=2))
+    f.write(json.dumps(results, indent=2))

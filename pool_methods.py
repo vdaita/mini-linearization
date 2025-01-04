@@ -15,18 +15,31 @@ def apply_causal_mask(attn_weights):
     mask = mask.to(attn_weights.device)
     return attn_weights.masked_fill(mask == 1, float('-inf'))
 
-def baseline_attention(q, k):
+def baseline_attention(q, k, block_size):
     # print("=====Running Baseline Attention=====")
     B, H, T, D = q.shape
+    num_chunks = T // block_size
     q, k = q.reshape(B * H, T, D), k.reshape(B * H, T, D)
     # print("QK shape: ", q.shape, k.shape)
     attn_weights = torch.einsum('bnd,bmd->bnm', q, k)
     attn_weights = apply_causal_mask(attn_weights)
     attn_weights = torch.softmax(attn_weights, dim=-1)
+
+    attn_weights = attn_weights.reshape(B * H, T, num_chunks, block_size)
+    attn_weights = attn_weights.sum(dim=-1)
+
+    baseline_diag_fill_indices_x = torch.arange(T)
+    baseline_diag_fill_indices_y = torch.arange(num_chunks).repeat_interleave(block_size)
+    attn_weights[:, baseline_diag_fill_indices_x, baseline_diag_fill_indices_y] = 0
+    
+    denominator = attn_weights.sum(dim=-1, keepdim=True)
+    denominator = torch.where(denominator == 0, torch.tensor(1.0, device=attn_weights.device), denominator)
+    attn_weights = attn_weights / denominator
     # print("Attn weights shape: ", attn_weights.shape)
     return attn_weights
 
 def reshape_qk(q, k, block_size):
+    B, H, T, D = q.shape
     q, k = q.reshape(B * H, T, D), k.reshape(B * H, T, D)
     q, k = q.reshape(B * H, T // block_size, block_size, D), k.reshape(B * H, T // block_size, block_size, D)
     return q, k
@@ -98,8 +111,8 @@ methods = {
     "softmax_max_min": softmax_max_min_attention
 }
 
-@torch.compile
-def comparison_score(baseline_weights, averaged_weights, q):
+# @torch.compile
+def comparison_score(baseline_weights, averaged_weights, q, block_size):
     B, H, T, D = q.shape
     num_chunks = T // block_size
 
@@ -128,7 +141,6 @@ def comparison_score(baseline_weights, averaged_weights, q):
     # print("weight percentage met: ", weight_percentage_met)
     # print("weight percentage met shape: ", weight_percentage_met.shape)
 
-
     # now, the last dimension of weight_percentage_met is increasing the more blocks you add
     # that means to take the average, you have to average over the first and second dimensions
 
@@ -141,22 +153,14 @@ def comparison_score(baseline_weights, averaged_weights, q):
     # print("Weight percentage met: ", weight_percentage_met)
     return weight_percentage_met
 
+
 @torch.compile
 def evaluate_methods(q, k, block_size):
     B, H, T, D = q.shape
     num_chunks = T // block_size
-    baseline_weights = baseline_attention(q, k)
+    baseline_weights = baseline_attention(q, k, block_size)
 
     # print("baseline weights: ", baseline_weights)
-
-    baseline_weights = baseline_weights.reshape(B * H, T, num_chunks, block_size)
-    baseline_weights = baseline_weights.sum(dim=-1)
-    
-    baseline_diag_fill_indices_x = torch.arange(T)
-    baseline_diag_fill_indices_y = torch.arange(num_chunks).repeat_interleave(block_size)
-    baseline_weights[:, baseline_diag_fill_indices_x, baseline_diag_fill_indices_y] = 0
-    baseline_weights = baseline_weights / (baseline_weights.sum(dim=-1, keepdim=True) + 1e-8)
-
     # print("baseline weights shape: ", baseline_weights.shape)
     # print("baseline weights with mean: ", baseline_weights)
     # print("averaged weights: ", averaged_weights)
@@ -167,14 +171,14 @@ def evaluate_methods(q, k, block_size):
     for method in methods:
         # print(f"Running {method} method")
         method_weights = methods[method](q, k, block_size)
-        results[method] = comparison_score(baseline_weights, method_weights, q)
+        results[method] = comparison_score(baseline_weights, method_weights, q, block_size)
 
     return results
 
 if __name__ == '__main__':
     B = 1
     H = 32
-    T = 4096
+    T = 64 * 256
     D = 64
 
     block_size = 64
