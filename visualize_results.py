@@ -25,10 +25,10 @@ def main(filepath: str):
         x_values = np.arange(1, len(y_values) + 1)
 
         idx_95 = np.where(y_values >= 0.95)[0]
-        hit_95 = str(x_values[idx_95[0]]) if len(idx_95) > 0 else "N/A"
+        hit_95 = f"{(idx_95[0] + 1) / len(y_values) * 100:.2f}%" if len(idx_95) > 0 else "N/A"
 
         idx_90 = np.where(y_values >= 0.9)[0]
-        hit_90 = str(x_values[idx_90[0]]) if len(idx_90) > 0 else "N/A"
+        hit_90 = f"{(idx_90[0] + 1) / len(y_values) * 100:.2f}%" if len(idx_90) > 0 else "N/A"
 
         table.add_row(method, hit_95, hit_90)
 
@@ -40,5 +40,5 @@ def main(filepath: str):
     plt.legend()
     plt.show()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     fire.Fire(main)
