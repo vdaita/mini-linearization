@@ -14,7 +14,7 @@ class FeatureMap(nn.Module, ABC):
         self.nheads = nheads
         self.head_dim = head_dim
 
-    def forward(self, query_states: nn.Tensor, key_states: nn.Tensor, attention_mask: nn.Tensor):
+    def forward(self, query_states: torch.Tensor, key_states: torch.Tensor, attention_mask: torch.Tensor):
         raise NotImplementedError("Subclasses should implement this method")
 
 class HedgehogFeatureMap(FeatureMap):
@@ -48,8 +48,8 @@ class LinearAttentionWeights(nn.Module):
         self.mapping_type = mapping_type
 
         if mapping_type == "linear":
-            self.feature_map_k = LinearFeatureMap(nheads, head_dim)
             self.feature_map_q = LinearFeatureMap(nheads, head_dim)
+            self.feature_map_k = LinearFeatureMap(nheads, head_dim)
         elif mapping_type == "hedgehog":
             self.feature_map_q = HedgehogFeatureMap(nheads, head_dim)
             self.feature_map_k = HedgehogFeatureMap(nheads, head_dim)
@@ -57,16 +57,19 @@ class LinearAttentionWeights(nn.Module):
             raise ValueError("mapping_type must be either 'linear' or 'hedgehog'")
 
     def forward(self,
-        query_states: nn.Tensor,
-        key_states: nn.Tensor,
-        attention_mask: Optional[nn.Tensor] = None
+        query_states: torch.Tensor,
+        key_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None
     ):
-        query_states = torch.einsum('blhd,hdd->blhd', query_states, self.feature_map_q)
-        key_states = torch.einsum('blhd,hdd->blhd', key_states, self.feature_map_k)
+        query_states = self.feature_map_k(query_states)
+        key_states = self.feature_map_q(key_states)
 
-        attn_weights = torch.einsum('bhld,bhld->bhll', query_states, key_states)
+        attn_weights = torch.einsum('bhld,bhkd->bhlk', query_states, key_states)
         if attention_mask:
             attn_weights = attn_weights.masked_fill(attention_mask < 0, 0)
+        else:
+            attn_weights = attn_weights.tril(diagonal=1)
+
         attn_weights = attn_weights / attn_weights.sum(dim=-1, keepdim=True)
         return attn_weights
     
@@ -90,17 +93,17 @@ class DiffLinearAttentionWeights(nn.Module):
         self.la_1 = LinearAttentionWeights(n_heads, head_dim, map_type_1)
         self.la_2 = LinearAttentionWeights(n_heads, head_dim, map_type_2)
 
-        self.lambda_q1 = nn.Parameter(torch.zeros(self.head_dim)).normal_(mean=0, std=0.1)
-        self.lambda_k1 = nn.Parameter(torch.zeros(self.head_dim)).normal_(mean=0, std=0.1)
-        self.lambda_q2 = nn.Parameter(torch.zeros(self.head_dim)).normal_(mean=0, std=0.1)
-        self.lambda_k2 = nn.Parameter(torch.zeros(self.head_dim)).normal_(mean=0, std=0.1)
+        self.lambda_q1 = nn.Parameter(torch.randn(self.head_dim) * 0.1)
+        self.lambda_k1 = nn.Parameter(torch.randn(self.head_dim) * 0.1)
+        self.lambda_q2 = nn.Parameter(torch.randn(self.head_dim) * 0.1)
+        self.lambda_k2 = nn.Parameter(torch.randn(self.head_dim) * 0.1)
 
         self.lambda_init = lambda_init_fn(self.depth)
 
     def forward(self, 
-        query_states: nn.Tensor,
-        key_states: nn.Tensor,
-        attention_mask: nn.Tensor
+        query_states: torch.Tensor,
+        key_states: torch.Tensor,
+        attention_mask: torch.Tensor
     ):
         B, H, T, D = query_states.shape
         assert H == self.n_heads and D == self.head_dim
@@ -119,3 +122,23 @@ class DiffLinearAttentionWeights(nn.Module):
     
 if __name__ == "__main__":
     print("Testing attention methods...")
+    batch_size = 4
+    n_heads = 4
+    head_dim = 64
+    depth = 2
+    seq_len = 10
+
+    la_regular = LinearAttentionWeights(n_heads, head_dim, "linear")
+    print(la_regular(
+        torch.randn(batch_size, n_heads, seq_len, head_dim),
+        torch.randn(batch_size, n_heads, seq_len, head_dim),
+        None
+    ))
+    print("Regular: ", la_regular.get_name())
+    la_diff = DiffLinearAttentionWeights(n_heads, head_dim, depth, "linear", "hedgehog")
+    print(la_diff(
+        torch.randn(batch_size, n_heads, seq_len, head_dim),
+        torch.randn(batch_size, n_heads, seq_len, head_dim),
+        None
+    ))
+    print(la_diff.get_name())
