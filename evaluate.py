@@ -13,7 +13,7 @@ from attention_methods import DiffLinearAttentionWeights, LinearAttentionWeights
 import wandb
 
 model_name = "meta-llama/Llama-3.2-1B-Instruct"
-dataset_name = "THUDM/LongBench-v2"
+dataset_name = "yahma/alpaca-cleaned"
 torch.set_printoptions(sci_mode=False)
 
 if torch.cuda.is_available():
@@ -25,6 +25,17 @@ else:
 
 model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="sdpa").to(device) 
 dataset = load_dataset(dataset_name, split="train")
+dataset = dataset.map(
+    lambda x: {
+        "text": tokenizer.apply_chat_template(
+            [
+                {"role": "system", "text": x["instruction"]},
+                {"role": "user", "text": x["input"]},
+                {"role": "assistant", "text": x["output"]},
+            ]
+        )
+    }
+)
 dataset = dataset.batch(batch_size=8)
 
 print("Finished loading model")
@@ -32,6 +43,10 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token_id = tokenizer.eos_token_id
 head_dim = model.config.hidden_size // model.config.num_attention_heads
 n_heads = model.config.num_attention_heads
+
+wandb.init(
+    project="llama-linearization"
+)
 
 with torch.grad():
     methods = [
@@ -51,6 +66,8 @@ with torch.grad():
             for method in methods
         ]
     ]
+
+    step = 0
     
     def custom_forward(
         self,
@@ -61,6 +78,8 @@ with torch.grad():
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+        global step
+
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -92,7 +111,14 @@ with torch.grad():
         for (method, optimizer) in zip(methods[self.layer_idx], optimizers[self.layer_idx]):
             generated_attention_weights = method(query_states, key_states, attention_mask)
             loss = F.mse_loss(attn_weights, generated_attention_weights)
-            
+
+            wandb.log({
+                "step": step,
+                "layer": self.layer_idx,
+                "method_name": method.get_name(),
+                "loss": loss.item()
+            })
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -109,3 +135,4 @@ with torch.grad():
         for key in inputs:
             inputs[key] = inputs[key].to(device)
         model(**inputs)
+        step += 1
