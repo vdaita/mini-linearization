@@ -43,7 +43,10 @@ class LinearFeatureMap(FeatureMap):
 class LinearAttentionWeights(nn.Module):
     def __init__(self, nheads: int, head_dim: int, mapping_type: str = "linear"):
         super().__init__()
-        
+        self.nheads = nheads
+        self.head_dim = head_dim
+        self.mapping_type = mapping_type
+
         if mapping_type == "linear":
             self.feature_map_k = LinearFeatureMap(nheads, head_dim)
             self.feature_map_q = LinearFeatureMap(nheads, head_dim)
@@ -67,6 +70,9 @@ class LinearAttentionWeights(nn.Module):
         attn_weights = attn_weights / attn_weights.sum(dim=-1, keepdim=True)
         return attn_weights
     
+    def get_name(self):
+        return f"linear_map_{self.mapping_type}"
+    
 
 
 class DiffLinearAttentionWeights(nn.Module):
@@ -75,6 +81,8 @@ class DiffLinearAttentionWeights(nn.Module):
         self.depth = depth
         self.n_heads = n_heads
         self.head_dim = head_dim
+        self.map_type_1 = map_type_1
+        self.map_type_2 = map_type_2 
 
         if not map_type_2:
             map_type_2 = map_type_1
@@ -105,6 +113,9 @@ class DiffLinearAttentionWeights(nn.Module):
         attn_weights_2 = self.la_2(query_states, key_states, attention_mask)
 
         return attn_weights_1 - lambda_full * attn_weights_2
+    
+    def get_name(self):
+        return f"diff_linear_map_{self.map_type_1}_{self.map_type_2}"
     
 if __name__ == "__main__":
     print("Testing attention methods...")
