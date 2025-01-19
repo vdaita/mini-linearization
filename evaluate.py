@@ -24,24 +24,32 @@ else:
     device = torch.device("cpu")
 
 model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="sdpa").to(device) 
+dataset = load_dataset(dataset_name, split="train")
+dataset = dataset.batch(batch_size=8)
+
 print("Finished loading model")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 tokenizer.pad_token_id = tokenizer.eos_token_id
-ds = load_dataset(dataset_name, split="train")
-ds = ds.shuffle()
-ds = ds.filter(lambda x: x["length"] == "long")
-ds = ds.select(list(range(100)))
-ds = ds.to_pandas()
+head_dim = model.config.hidden_size // model.config.num_attention_heads
+n_heads = model.config.num_attention_heads
 
 with torch.grad():
-    
     methods = [
-
+        [
+            DiffLinearAttentionWeights(n_heads, head_dim, depth, "hedgehog", "hedgehog"),
+            LinearAttentionWeights(n_heads, head_dim, "hedgehog"),
+            DiffLinearAttentionWeights(n_heads, head_dim, depth, "linear", "linear"),
+            LinearAttentionWeights(n_heads, head_dim, "linear"),
+            DiffLinearAttentionWeights(n_heads, head_dim, depth, "hedgehog", "linear"),
+        ] 
+        for depth in range(model.config.num_hidden_layers)
     ]
 
     optimizers = [
-        torch.optim.AdamW(method.parameters(), lr=1e-5)
-        for method in methods
+        [    
+            torch.optim.AdamW(method.parameters(), lr=1e-5)
+            for method in methods
+        ]
     ]
     
     def custom_forward(
@@ -81,7 +89,7 @@ with torch.grad():
             **kwargs,
         )
 
-        for (method, optimizer) in zip(methods, optimizers):
+        for (method, optimizer) in zip(methods[self.layer_idx], optimizers[self.layer_idx]):
             generated_attention_weights = method(query_states, key_states, attention_mask)
             loss = F.mse_loss(attn_weights, generated_attention_weights)
             
@@ -93,10 +101,11 @@ with torch.grad():
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
-    LlamaSdpaAttention.forward = custom_forward
+    for layer in model.model.layers:
+        layer.forward = custom_forward
 
-    for batch in dataset:
-        tokenized_text = tokenizer(batch["text"], return_tensors="pt", padding=True, truncation=True, max_length=1024)
-        for key in tokenized_text:
-            tokenized_text[key] = tokenized_text[key].to(device)
-        model(**tokenized_text)
+    for batch in tqdm(dataset):
+        inputs = tokenizer(batch["text"], return_tensors="pt", padding=True, truncation=True, max_length=1024)
+        for key in inputs:
+            inputs[key] = inputs[key].to(device)
+        model(**inputs)

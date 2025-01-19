@@ -20,8 +20,8 @@ class FeatureMap(nn.Module, ABC):
 class HedgehogFeatureMap(FeatureMap):
     def __init__(self, nheads: int, head_dim: int):
         super().__init__(nheads, head_dim)
-        self.feature_map = nn.Parameter(torch.zeros(nheads, head_dim, head_dim // 2))
-    
+        self.feature_map = nn.Parameter(torch.randn(nheads, head_dim, head_dim // 2))
+
     def forward(self, states): # states: (B, H, T, D)
         states = states.transpose(1, 2)
         states = torch.einsum('blhd,hde->blhe', states, self.feature_map)
@@ -32,7 +32,7 @@ class HedgehogFeatureMap(FeatureMap):
 class LinearFeatureMap(FeatureMap):
     def __init__(self, nheads: int, head_dim: int):
         super().__init__(nheads, head_dim)
-        self.feature_map = nn.Parameter(torch.zeros(nheads, head_dim, head_dim))
+        self.feature_map = nn.Parameter(torch.randn(nheads, head_dim, head_dim))
 
     def forward(self, states):
         states = states.transpose(1, 2)
@@ -41,7 +41,7 @@ class LinearFeatureMap(FeatureMap):
         return states
     
 class LinearAttentionWeights(nn.Module):
-    def __init__(self, nheads: int, head_dim: int, mapping_type: str):
+    def __init__(self, nheads: int, head_dim: int, mapping_type: str = "linear"):
         super().__init__()
         
         if mapping_type == "linear":
