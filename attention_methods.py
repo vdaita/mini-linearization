@@ -4,6 +4,7 @@ import math
 from abc import ABC
 import copy
 from typing import Optional
+from fast_transformers.causal_product import causal_dot_product
 
 def lambda_init_fn(depth):
     return 0.8 - 0.6 * math.exp(-0.3 * depth)
@@ -64,20 +65,40 @@ class LinearAttention(nn.Module):
         key_states: torch.Tensor,
         value_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        normalize: bool = True
+        normalize: bool = True,
+        use_linear: bool = False,
+        return_states: bool = False
     ):
         query_states = self.feature_map_k(query_states)
         key_states = self.feature_map_q(key_states)
 
-        attn_weights = torch.einsum('bhld,bhkd->bhlk', query_states, key_states)
-        if attention_mask:
-            attn_weights = attn_weights.masked_fill(attention_mask < 0, 0)
+        if use_linear:
+            attn_weights = None
+            out = causal_dot_product(
+                query_states.contiguous().to(dtype=torch.float32),
+                key_states.contiguous().to(dtype=torch.float32),
+                value_states.contiguous().to(dtype=torch.float32)
+            )
+            out = out.to(dtype=query_states.dtype)
+            if normalize:
+                keys_sum = key_states.cumsum(dim=2)
+                out = out / (torch.einsum("bhld,bhld->bhl", query_states, keys_sum) + 1e-8)[..., None]
         else:
-            attn_weights = attn_weights.tril(diagonal=0)
+            attn_weights = torch.einsum('bhld,bhkd->bhlk', query_states, key_states)
+            if attention_mask:
+                attn_weights = attn_weights.masked_fill(attention_mask < 0, 0)
+            else:
+                attn_weights = attn_weights.tril(diagonal=0)
 
-        if normalize:
-            attn_weights = attn_weights / attn_weights.sum(dim=-1, keepdim=True)
-        return attn_weights @ value_states, attn_weights
+            if normalize:
+                attn_weights = attn_weights / attn_weights.sum(dim=-1, keepdim=True)
+            
+            out = attn_weights @ value_states
+            
+        if return_states:
+            return out, attn_weights, query_states, key_states
+        else:
+            return out, attn_weights
     
     def get_name(self):
         return f"linear_map_{self.mapping_type}"
@@ -119,8 +140,8 @@ class DiffLinearAttention(nn.Module):
         lambda_2 = torch.exp(torch.sum(self.lambda_q2 * self.lambda_k2, dim=-1).float()).type_as(query_states)
         lambda_full = lambda_1 - lambda_2 + self.lambda_init
 
-        out_1, attn_weights_1 = self.la_1(query_states, key_states, value_states, attention_mask, normalize=False)
-        out_2, attn_weights_2 = self.la_2(query_states, key_states, value_states, attention_mask, normalize=False)
+        out_1, attn_weights_1, queries_1, keys_1 = self.la_1(query_states, key_states, value_states, attention_mask, normalize=False, return_states=True)
+        out_2, attn_weights_2, queries_2, keys_2 = self.la_2(query_states, key_states, value_states, attention_mask, normalize=False, return_states=True)
 
         attn_weights = attn_weights_1 / (1 + lambda_full * attn_weights_2)
         attn_weights /= attn_weights.sum(dim=-1, keepdim=True)
@@ -143,12 +164,28 @@ if __name__ == "__main__":
         torch.randn(batch_size, n_heads, seq_len, head_dim),
         torch.randn(batch_size, n_heads, seq_len, head_dim),
         torch.randn(batch_size, n_heads, seq_len, head_dim),
-        None
+        None,
+        use_linear=False,
+        normalize=True
     )
     print("Regular linear attention out: ")
     print(out)
     print("Attention weights:")
     print(attn_weights)
+
+    la_regular = LinearAttention(n_heads, head_dim, "linear")
+    out_linear, _ = la_regular(
+        torch.randn(batch_size, n_heads, seq_len, head_dim),
+        torch.randn(batch_size, n_heads, seq_len, head_dim),
+        torch.randn(batch_size, n_heads, seq_len, head_dim),
+        None,
+        use_linear=True,
+        normalize=True
+    )
+    print("Regular linear attention out: ")
+    print(out_linear)
+    
+    print("For regular: linear and quadratic are the same: ", torch.allclose(out, out_linear))
 
     la_diff = DiffLinearAttention(n_heads, head_dim, depth, "linear", "hedgehog")
     out, attn_weights = la_diff(
