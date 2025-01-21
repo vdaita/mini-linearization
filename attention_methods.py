@@ -9,7 +9,6 @@ from fast_transformers.causal_product import causal_dot_product
 def lambda_init_fn(depth):
     return 0.8 - 0.6 * math.exp(-0.3 * depth)
 
-
 class FeatureMap(nn.Module, ABC):
     def __init__(self, nheads: int, head_dim: int):
         super().__init__()
@@ -166,21 +165,22 @@ if __name__ == "__main__":
         torch.randn(batch_size, n_heads, seq_len, head_dim),
         None,
         use_linear=False,
-        normalize=True
+        normalize=False
     )
-    print("Regular linear attention out: ")
+    print("Regular linear attention out (quadratic form): ")
     print(out)
     print("Attention weights:")
     print(attn_weights)
 
     la_regular = LinearAttention(n_heads, head_dim, "linear")
+    values_identity = torch.eye(head_dim).unsqueeze(0).unsqueeze(0).expand(batch_size, n_heads, head_dim, head_dim)
     out_linear, _ = la_regular(
         torch.randn(batch_size, n_heads, seq_len, head_dim),
         torch.randn(batch_size, n_heads, seq_len, head_dim),
-        torch.randn(batch_size, n_heads, seq_len, head_dim),
+        values_identity,
         None,
         use_linear=True,
-        normalize=True
+        normalize=False
     )
     print("Regular linear attention out: ")
     print(out_linear)
@@ -191,7 +191,7 @@ if __name__ == "__main__":
     out, attn_weights = la_diff(
         torch.randn(batch_size, n_heads, seq_len, head_dim),
         torch.randn(batch_size, n_heads, seq_len, head_dim),
-        torch.randn(batch_size, n_heads, seq_len, head_dim),
+        values_identity,
         None
     )
     
