@@ -55,15 +55,21 @@ if __name__ == "__main__":
     query_states_1 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
     key_states_1 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
 
-    query_states_2 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
-    key_states_2 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
+    query_states_2 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu().sigmoid()
+    key_states_2 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu().sigmoid()
+
+    query_states_2 *= query_states_1
+    key_states_2 *= query_states_2
 
     value_states = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
+    alpha = torch.Tensor([0.8])
 
     linear_attention_result, _, _ = linear_attention(query_states_1, key_states_1, value_states)
-    quadratic_attention_result, _, _ = quadratic_attention(query_states_1, key_states_1, value_states)
+    quadratic_attention_result, attention_weights, _ = quadratic_attention(query_states_1, key_states_1, value_states)
     print(torch.allclose(linear_attention_result, quadratic_attention_result))
+    print(attention_weights.sum(dim=-1))
 
-    linear_attention_result, _, _ = diff_linear_attention(query_states_1, key_states_1, query_states_2, key_states_2, value_states)
-    quadratic_attention_result, _, _ = diff_quadratic_attention(query_states_1, key_states_1, query_states_2, key_states_2, value_states)
+    linear_attention_result, _, _ = diff_linear_attention(query_states_1, key_states_1, query_states_2, key_states_2, value_states, alpha)
+    quadratic_attention_result, attention_weights, _ = diff_quadratic_attention(query_states_1, key_states_1, query_states_2, key_states_2, value_states, alpha)
     print(torch.allclose(linear_attention_result, quadratic_attention_result))
+    print(attention_weights.sum(dim=-1))
