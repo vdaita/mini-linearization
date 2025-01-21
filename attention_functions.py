@@ -40,28 +40,35 @@ def linear_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
         y = y / (torch.einsum("bhld,bhld->bhl", q, k) + eps)[..., None]
     return y, None, None
 
-
-def softmax_attention(q: torch.Tensor, k: torch.Tensor, v: Optional[torch.Tensor] = None, 
-                      causal: bool = True, fp32_attention: bool = True,
-                      ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+def diff_linear_attention(q_1: torch.Tensor, k_1: torch.Tensor, q_2: torch.Tensor, k_2: torch.Tensor, v: torch.Tensor,
+                     fp32_attention: bool = False, eps: float = 1e-12,
+                     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     """
-    Standard softmax attention; only compute outputs if v is not None
-    -> Assume q, k, v are shape (batch_size, num_heads, seq_len, head_dim)
+    Compute linear attention with CUDA kernel implementation from fast-transformers
+    - https://github.com/idiap/fast-transformers
+    - Assume q, k are shape (batch_size, num_heads, seq_len, feature_dim); 
+      v is shape (b, h, l, head_dim)
     """
-    y = None
-    a = torch.einsum('bhmd,bhnd->bhmn', q, k) * (k.shape[-1] ** -0.5)
-    if causal:  # Apply causal mask
-        m, n = a.shape[-2:]
-        causal_mask = torch.ones((m, n), device = a.device, dtype = torch.bool).triu(n - m + 1)
-        a = a.masked_fill(causal_mask, -torch.finfo(a.dtype).max)
-    if fp32_attention:
-        a = torch.softmax(a, dim=-1, dtype=torch.float32).to(q.dtype)
-    else:
-        a = torch.softmax(a, dim=-1)
-    if v is not None:
-        y = torch.einsum('bhmn,bhnd->bhmd', a, v)
-    return y, a, None
+    dtype = q_1.dtype
+    # Causal mask already applied
+    y_1 = causal_dot_product(q_1.contiguous().to(dtype=torch.float32),
+                           k_1.contiguous().to(dtype=torch.float32),
+                           v.contiguous().to(dtype=torch.float32))
+    
+    y_2 = causal_dot_product(q_2.contiguous().to(dtype=torch.float32),
+                           k_2.contiguous().to(dtype=torch.float32),
+                           v.contiguous().to(dtype=torch.float32))
 
+    sum_1 = (torch.einsum(
+        "bhld,bhld->bhl", q_1.float(), k_1.float().cumsum(dim=2)
+    ) + eps)[..., None]
+    sum_2 = (torch.einsum(
+        "bhld,bhld->bhl", q_2.float(), k_2.float().cumsum(dim=2)
+    ) + eps)[..., None]
+
+    y = (y_1 / sum_1) / (1 + y_2 / sum_2)
+
+    return y, None, None
 
 def quadratic_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor = None,
                         causal: bool = True, fp32_attention: bool = False, eps: float = 1e-12,
@@ -89,3 +96,39 @@ def quadratic_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor = None
         y = torch.einsum('bhmn,bhnd->bhmd', a, v)
     return y, a, None
 
+def diff_quadratic_attention(q_1: torch.Tensor, k_1: torch.Tensor, q_2: torch.Tensor, k_2: torch.Tensor, v: torch.Tensor = None,
+                        causal: bool = True, fp32_attention: bool = False, eps: float = 1e-12,
+                        ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    """
+    Compute attention with feature maps by instantiating L x L matrix of attention weights
+    -> Use for attention distillation
+    -> Assume q, k are shape (batch_size, num_heads, seq_len, feature_dim); v is shape (b, h, l, head_dim)
+    """
+    y = None
+    dtype = q_1.dtype
+    if fp32_attention:
+        q_1, k_1 = q_1.float(), k_1.float()
+        q_2, k_2 = q_2.float(), k_2.float()
+
+    a_1 = torch.einsum('bhmd,bhnd->bhmn', q_1, k_1)  # note we don't scale, tho we could
+    a_2 = torch.einsum('bhmd,bhnd->bhmn', q_2, k_2)
+
+    if causal:  # Apply causal mask
+        m, n = a_1.shape[-2:]
+        causal_mask = torch.ones((m, n), device = a_1.device, dtype = torch.bool).triu(n - m + 1)
+        a_1 = a_1.masked_fill(causal_mask, 0)
+        a_2 = a_2.masked_fill(causal_mask, 0)
+
+    a_1 = a_1 / (a_1.sum(dim=-1, keepdim=True) + eps)
+    a_1 = a_1.to(dtype=dtype) if fp32_attention else a_1
+
+    a_2 = a_2 / (a_2.sum(dim=-1, keepdim=True) + eps)
+    a_2 = a_2.to(dtype=dtype) if fp32_attention else a_2
+
+    # Normalize to compute attention
+    if torch.isnan(a_1).sum() > 0 or torch.isnan(a_2).sum() > 0:
+        breakpoint()
+
+    if v is not None:
+        y = torch.einsum('bhmn,bhnd->bhmd', a_1, v) / (1 + torch.einsum('bhmn,bhnd->bhmd', a_2, v))
+    return y, a_1 / (1 + a_2), None

@@ -5,7 +5,7 @@ from abc import ABC
 import copy
 from typing import Optional
 from fast_transformers.causal_product import causal_dot_product
-from attention_functions import linear_attention, softmax_attention, quadratic_attention
+from attention_functions import linear_attention, quadratic_attention, diff_linear_attention, diff_quadratic_attention
 
 def lambda_init_fn(depth):
     return 0.8 - 0.6 * math.exp(-0.3 * depth)
@@ -52,10 +52,18 @@ if __name__ == "__main__":
     depth = 2
     seq_len = 4
 
-    query_states = torch.randn(batch_size, n_heads, seq_len, head_dim)
-    key_states = torch.randn(batch_size, n_heads, seq_len, head_dim)
-    value_states = torch.randn(batch_size, n_heads, seq_len, head_dim)
+    query_states_1 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
+    key_states_1 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
 
-    linear_attention_result, _, _ = linear_attention(query_states, key_states, value_states)
-    quadratic_attention_result, _, _ = quadratic_attention(query_states, key_states, value_states)
+    query_states_2 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
+    key_states_2 = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
+
+    value_states = torch.randn(batch_size, n_heads, seq_len, head_dim).relu()
+
+    linear_attention_result, _, _ = linear_attention(query_states_1, key_states_1, value_states)
+    quadratic_attention_result, _, _ = quadratic_attention(query_states_1, key_states_1, value_states)
+    print(torch.allclose(linear_attention_result, quadratic_attention_result))
+
+    linear_attention_result, _, _ = diff_linear_attention(query_states_1, key_states_1, query_states_2, key_states_2, value_states)
+    quadratic_attention_result, _, _ = diff_quadratic_attention(query_states_1, key_states_1, query_states_2, key_states_2, value_states)
     print(torch.allclose(linear_attention_result, quadratic_attention_result))
