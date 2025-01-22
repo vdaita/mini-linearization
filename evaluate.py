@@ -10,10 +10,12 @@ from transformers.cache_utils import Cache
 import torch.nn.functional as F
 from attention_methods import DiffLinearAttention, LinearAttention
 from types import MethodType
+import os
 
 import wandb
 
-model_name = "meta-llama/Llama-3.2-1B-Instruct"
+model_name = "HuggingFaceTB/SmolLM2-360M-Instruct"
+# model_name = "meta-llama/Llama-3.2-1B-Instruct"
 dataset_name = "yahma/alpaca-cleaned"
 torch.set_printoptions(sci_mode=False)
 
@@ -64,7 +66,6 @@ with torch.enable_grad():
             LinearAttention(n_heads, head_dim, "hedgehog"),
             DiffLinearAttention(n_heads, head_dim, "linear", "linear"),
             LinearAttention(n_heads, head_dim, "linear"),
-            DiffLinearAttention(n_heads, head_dim, "hedgehog", "linear"),
         ] 
         for _ in range(model.config.num_hidden_layers)
     ]
@@ -79,6 +80,21 @@ with torch.enable_grad():
             for method in layer
         ] for layer in methods
     ]
+
+    def save_results(out_path: str):
+        global methods
+        tensor_dicts = []
+        for layer in methods:
+            layer_dicts = []
+            for method in layer:
+                method_dict = {
+                    "name": method.get_name(),
+                    "state_dict": method.state_dict()
+                }
+                layer_dicts.append(method_dict)
+                tensor_dicts.append(layer_dicts)
+        
+        torch.save(tensor_dicts, out_path)
 
     step = 0
     
@@ -123,14 +139,18 @@ with torch.enable_grad():
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
+        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
 
         for (method, optimizer) in zip(methods[self.layer_idx], optimizers[self.layer_idx]):
-            generated_output, _, _ = method(query_states, key_states, value_states)
+            generated_output, generated_weights, _ = method(query_states, key_states, value_states)
             generated_output = generated_output.transpose(1, 2)
+            generated_output = generated_output.reshape(*input_shape, -1).contiguous()
             # print("Generated output: ", generated_output.shape)
             # print("Attention output: ", attn_output.shape)
+            # loss = F.mse_loss(generated_output, attn_output)
 
-            loss = F.mse_loss(attn_output, generated_output)
+            loss = F.kl_div((generated_weights + 1e-8).log(), attn_weights)
+            # print("Generated loss: ", loss)
 
             wandb.log({
                 "step": step,
@@ -146,7 +166,6 @@ with torch.enable_grad():
             loss.backward()
             optimizer.step()
 
-        attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
         return attn_output, attn_weights
 
@@ -156,7 +175,12 @@ with torch.enable_grad():
     for param in model.model.parameters():
         param.requires_grad = False
 
+    os.makedirs("./checkpoints", exist_ok=True)
+
     for batch in tqdm(dataset):
+        if step % 100 == 0:
+            save_results(f"./checkpoints/step_{step}.pth")
+
         inputs = tokenizer(batch["text"], return_tensors="pt", padding=True, truncation=True, max_length=1024)
         for key in inputs:
             inputs[key] = inputs[key].to(device)
