@@ -51,13 +51,13 @@ wandb.init(
 with torch.grad():
     methods = [
         [
-            DiffLinearAttentionWeights(n_heads, head_dim, depth, "hedgehog", "hedgehog"),
+            DiffLinearAttentionWeights(n_heads, head_dim, "hedgehog", "hedgehog"),
             LinearAttentionWeights(n_heads, head_dim, "hedgehog"),
-            DiffLinearAttentionWeights(n_heads, head_dim, depth, "linear", "linear"),
+            DiffLinearAttentionWeights(n_heads, head_dim, "linear", "linear"),
             LinearAttentionWeights(n_heads, head_dim, "linear"),
-            DiffLinearAttentionWeights(n_heads, head_dim, depth, "hedgehog", "linear"),
+            DiffLinearAttentionWeights(n_heads, head_dim, "hedgehog", "linear"),
         ] 
-        for depth in range(model.config.num_hidden_layers)
+        for _ in range(model.config.num_hidden_layers)
     ]
 
     optimizers = [
@@ -109,8 +109,8 @@ with torch.grad():
         )
 
         for (method, optimizer) in zip(methods[self.layer_idx], optimizers[self.layer_idx]):
-            generated_attention_weights = method(query_states, key_states, attention_mask)
-            loss = F.mse_loss(attn_weights, generated_attention_weights)
+            generated_output = method(query_states, key_states, attention_mask)
+            loss = F.mse_loss(attn_output, generated_output)
 
             wandb.log({
                 "step": step,
