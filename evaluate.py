@@ -123,7 +123,7 @@ with torch.enable_grad():
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
-        
+
         for (method, optimizer) in zip(methods[self.layer_idx], optimizers[self.layer_idx]):
             generated_output, _, _ = method(query_states, key_states, value_states)
             generated_output = generated_output.transpose(1, 2)
@@ -138,6 +138,9 @@ with torch.enable_grad():
                 "method_name": method.get_name(),
                 "loss": loss.item()
             })
+
+            if step % 100 == 0:
+                print("Step: ", step, "Layer: ", self.layer_idx, "Method: ", method.get_name(), "Loss: ", loss.item())
 
             optimizer.zero_grad()
             loss.backward()
