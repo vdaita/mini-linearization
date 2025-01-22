@@ -4,7 +4,6 @@ import math
 from abc import ABC
 import copy
 from typing import Optional
-from fast_transformers.causal_product import causal_dot_product
 from attention_functions import linear_attention, quadratic_attention, diff_linear_attention, diff_quadratic_attention
 
 def lambda_init_fn(depth):
@@ -26,6 +25,7 @@ class HedgehogFeatureMap(FeatureMap):
 
     def forward(self, states): # states: (B, H, T, D)
         states = states.transpose(1, 2)
+        # print("Hedgehog feature map shapes: ", states.shape, self.feature_map.shape)
         states = torch.einsum('blhd,hde->blhe', states, self.feature_map)
         states = torch.cat([states, -states], dim=-1)
         states = states.transpose(1, 2)
@@ -39,6 +39,7 @@ class LinearFeatureMap(FeatureMap):
 
     def forward(self, states):
         states = states.transpose(1, 2)
+        # print("Linear feature map shapes: ", states.shape, self.feature_map.shape)
         states = torch.einsum('blhd,hde->blhe', states, self.feature_map)
         states = states.transpose(1, 2)
         states = states.relu()
@@ -64,6 +65,9 @@ class LinearAttention(nn.Module):
             return linear_attention(query_states, key_states, value_states)
         else:
             return quadratic_attention(query_states, key_states, value_states)
+        
+    def get_name(self):
+        return f"LinearAttention_{self.fm}"
 
 class DiffLinearAttention(nn.Module):
     def __init__(self, nheads: int, head_dim: int, fm_1: str = 'linear', fm_2: str = 'linear'):
@@ -91,13 +95,18 @@ class DiffLinearAttention(nn.Module):
                 implementation: str = 'quadratic'):
         query_states_1, key_states_1 = self.fm_1_query(query_states), self.fm_1_key(key_states)
         query_states_2, key_states_2 = self.fm_2_query(query_states).sigmoid(), self.fm_2_key(key_states).sigmoid()
+
         query_states_2 *= query_states_1
         key_states_2 *= key_states_1
 
         if implementation == 'linear':
             return diff_linear_attention(query_states_1, key_states_1, query_states_2, key_states_2, value_states, self.alpha)
         else:
+            # print("Using quadratic attention")
             return diff_quadratic_attention(query_states_1, key_states_1, query_states_2, key_states_2, value_states, self.alpha)
+        
+    def get_name(self):
+        return f"DiffLinearAttention_{self.fm_1}_{self.fm_2}"
 
 if __name__ == "__main__":
     print("Testing attention methods...")

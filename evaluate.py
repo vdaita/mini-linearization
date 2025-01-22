@@ -5,14 +5,15 @@ from tqdm import tqdm
 from dataclasses import dataclass
 from torch import nn
 from typing import Optional, Tuple
-from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, Unpack, FlashAttentionKwargs, Callable, eager_attention_forward
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, Unpack, FlashAttentionKwargs, Callable, eager_attention_forward, repeat_kv
 from transformers.cache_utils import Cache
 import torch.nn.functional as F
-from attention_methods import DiffLinearAttentionWeights, LinearAttentionWeights, HedgehogFeatureMap, LinearFeatureMap
+from attention_methods import DiffLinearAttention, LinearAttention
+from types import MethodType
 
 import wandb
 
-model_name = "meta-llama/Llama-3.2-1B-Instruct"
+model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
 dataset_name = "yahma/alpaca-cleaned"
 torch.set_printoptions(sci_mode=False)
 
@@ -24,15 +25,21 @@ else:
     device = torch.device("cpu")
 
 model = AutoModelForCausalLM.from_pretrained(model_name, attn_implementation="sdpa").to(device) 
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+print("Model: ", model)
+
 dataset = load_dataset(dataset_name, split="train")
 dataset = dataset.map(
     lambda x: {
         "text": tokenizer.apply_chat_template(
             [
-                {"role": "system", "text": x["instruction"]},
-                {"role": "user", "text": x["input"]},
-                {"role": "assistant", "text": x["output"]},
-            ]
+                {"role": "system", "content": x["instruction"]},
+                {"role": "user", "content": x["input"]},
+                {"role": "assistant", "content": x["output"]},
+            ],
+            tokenize=False,
+            add_generation_prompt=True
         )
     }
 )
@@ -48,23 +55,27 @@ wandb.init(
     project="llama-linearization"
 )
 
-with torch.grad():
+with torch.enable_grad():
     methods = [
         [
-            DiffLinearAttentionWeights(n_heads, head_dim, "hedgehog", "hedgehog"),
-            LinearAttentionWeights(n_heads, head_dim, "hedgehog"),
-            DiffLinearAttentionWeights(n_heads, head_dim, "linear", "linear"),
-            LinearAttentionWeights(n_heads, head_dim, "linear"),
-            DiffLinearAttentionWeights(n_heads, head_dim, "hedgehog", "linear"),
+            DiffLinearAttention(n_heads, head_dim, "hedgehog", "hedgehog"),
+            LinearAttention(n_heads, head_dim, "hedgehog"),
+            DiffLinearAttention(n_heads, head_dim, "linear", "linear"),
+            LinearAttention(n_heads, head_dim, "linear"),
+            DiffLinearAttention(n_heads, head_dim, "hedgehog", "linear"),
         ] 
         for _ in range(model.config.num_hidden_layers)
     ]
 
+    for layer in methods:
+        for method in layer:
+            method.to(device)
+
     optimizers = [
         [    
             torch.optim.AdamW(method.parameters(), lr=1e-5)
-            for method in methods
-        ]
+            for method in layer
+        ] for layer in methods
     ]
 
     step = 0
@@ -108,8 +119,15 @@ with torch.grad():
             **kwargs,
         )
 
+        key_states = repeat_kv(key_states, self.num_key_value_groups)
+        value_states = repeat_kv(value_states, self.num_key_value_groups)
+
         for (method, optimizer) in zip(methods[self.layer_idx], optimizers[self.layer_idx]):
-            generated_output = method(query_states, key_states, attention_mask)
+            generated_output, _, _ = method(query_states, key_states, value_states)
+            generated_output = generated_output.transpose(1, 2)
+            # print("Generated output: ", generated_output.shape)
+            # print("Attention output: ", attn_output.shape)
+
             loss = F.mse_loss(attn_output, generated_output)
 
             wandb.log({
@@ -128,7 +146,7 @@ with torch.grad():
         return attn_output, attn_weights
 
     for layer in model.model.layers:
-        layer.forward = custom_forward
+        layer.self_attn.forward = MethodType(custom_forward, layer.self_attn)
 
     for batch in tqdm(dataset):
         inputs = tokenizer(batch["text"], return_tensors="pt", padding=True, truncation=True, max_length=1024)

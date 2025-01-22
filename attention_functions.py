@@ -69,6 +69,8 @@ def diff_linear_attention(q_1: torch.Tensor, k_1: torch.Tensor, q_2: torch.Tenso
         "bhld,bhld->bhl", q_2.float(), k_2.float().cumsum(dim=2)
     ) + eps)[..., None]
 
+    # print("Diff linear attention shapes: ", y_1.shape, y_2.shape, sum_1.shape, sum_2.shape)
+
     y = (y_1 - alpha * y_2) / (sum_1 - alpha * sum_2)
 
     return y, None, None
@@ -107,6 +109,7 @@ def diff_quadratic_attention(q_1: torch.Tensor, k_1: torch.Tensor, q_2: torch.Te
     -> Use for attention distillation
     -> Assume q, k are shape (batch_size, num_heads, seq_len, feature_dim); v is shape (b, h, l, head_dim)
     """
+    # print("Diff quadratic attention shapes: ", q_1.shape, k_1.shape, q_2.shape, k_2.shape, v.shape)
     y = None
     dtype = q_1.dtype
     if fp32_attention:
@@ -139,4 +142,5 @@ def diff_quadratic_attention(q_1: torch.Tensor, k_1: torch.Tensor, q_2: torch.Te
     a /= a_1.sum(dim=-1, keepdim=True) - alpha * a_2.sum(dim=-1, keepdim=True) + eps
     if v is not None:
         y = torch.einsum('bhmn,bhnd->bhmd', a, v)
+        # print("Diff quadratic attention shapes: ", y.shape, a.shape, v.shape)
     return y, a, None
