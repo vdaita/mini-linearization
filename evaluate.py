@@ -17,6 +17,8 @@ model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
 dataset_name = "yahma/alpaca-cleaned"
 torch.set_printoptions(sci_mode=False)
 
+torch.autograd.set_detect_anomaly(True)
+
 if torch.cuda.is_available():
     device = torch.device("cuda")
 elif torch.backends.mps.is_available():
@@ -121,7 +123,7 @@ with torch.enable_grad():
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
-
+        
         for (method, optimizer) in zip(methods[self.layer_idx], optimizers[self.layer_idx]):
             generated_output, _, _ = method(query_states, key_states, value_states)
             generated_output = generated_output.transpose(1, 2)
@@ -147,6 +149,9 @@ with torch.enable_grad():
 
     for layer in model.model.layers:
         layer.self_attn.forward = MethodType(custom_forward, layer.self_attn)
+        
+    for param in model.model.parameters():
+        param.requires_grad = False
 
     for batch in tqdm(dataset):
         inputs = tokenizer(batch["text"], return_tensors="pt", padding=True, truncation=True, max_length=1024)

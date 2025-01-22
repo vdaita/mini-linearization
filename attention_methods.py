@@ -23,14 +23,14 @@ class HedgehogFeatureMap(FeatureMap):
         super().__init__(nheads, head_dim)
         self.feature_map = nn.Parameter(torch.rand(nheads, head_dim, head_dim // 2))
 
-    def forward(self, states): # states: (B, H, T, D)
-        states = states.transpose(1, 2)
-        # print("Hedgehog feature map shapes: ", states.shape, self.feature_map.shape)
-        states = torch.einsum('blhd,hde->blhe', states, self.feature_map)
-        states = torch.cat([states, -states], dim=-1)
-        states = states.transpose(1, 2)
-        states = torch.softmax(states, dim=-1)
-        return states
+    def forward(self, states):
+        # Clone to avoid modifying input
+        x = states.clone()
+        x = x.transpose(1, 2).contiguous()
+        mapped = torch.einsum('blhd,hde->blhe', x, self.feature_map)
+        pos_neg = torch.cat([mapped, -mapped], dim=-1)
+        output = pos_neg.transpose(1, 2).contiguous()
+        return torch.nn.functional.softmax(output, dim=-1)
     
 class LinearFeatureMap(FeatureMap):
     def __init__(self, nheads: int, head_dim: int):
@@ -38,13 +38,12 @@ class LinearFeatureMap(FeatureMap):
         self.feature_map = nn.Parameter(torch.rand(nheads, head_dim, head_dim))
 
     def forward(self, states):
-        states = states.transpose(1, 2)
-        # print("Linear feature map shapes: ", states.shape, self.feature_map.shape)
-        states = torch.einsum('blhd,hde->blhe', states, self.feature_map)
-        states = states.transpose(1, 2)
-        states = states.relu()
-        return states
-    
+        x = states.clone()
+        x = x.transpose(1, 2).contiguous()
+        mapped = torch.einsum('blhd,hde->blhe', x, self.feature_map)
+        output = mapped.transpose(1, 2).contiguous()
+        return torch.nn.functional.relu(output)
+        
 class LinearAttention(nn.Module):
     def __init__(self, nheads: int, head_dim: int, fm: str = 'linear'):
         super().__init__()
@@ -88,16 +87,17 @@ class DiffLinearAttention(nn.Module):
         self.alpha = nn.Parameter(torch.Tensor([0.3]))
 
         
-    def forward(self,
-                query_states,
-                key_states,
-                value_states,
-                implementation: str = 'quadratic'):
+    def forward(self, query_states, key_states, value_states, implementation: str = 'quadratic'):
         query_states_1, key_states_1 = self.fm_1_query(query_states), self.fm_1_key(key_states)
-        query_states_2, key_states_2 = self.fm_2_query(query_states).sigmoid(), self.fm_2_key(key_states).sigmoid()
-
-        query_states_2 *= query_states_1
-        key_states_2 *= key_states_1
+        query_states_2, key_states_2 = self.fm_2_query(query_states), self.fm_2_key(key_states)
+        
+        # Apply sigmoid after clone
+        query_states_2 = query_states_2.clone().sigmoid()
+        key_states_2 = key_states_2.clone().sigmoid()
+        
+        # Use mul instead of *= for gradient stability
+        query_states_2 = query_states_2.mul(query_states_1)
+        key_states_2 = key_states_2.mul(key_states_1)
 
         if implementation == 'linear':
             return diff_linear_attention(query_states_1, key_states_1, query_states_2, key_states_2, value_states, self.alpha)
