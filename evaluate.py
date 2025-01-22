@@ -13,7 +13,7 @@ from types import MethodType
 
 import wandb
 
-model_name = "HuggingFaceTB/SmolLM2-135M-Instruct"
+model_name = "meta-llama/Llama-3.2-1B-Instruct"
 dataset_name = "yahma/alpaca-cleaned"
 torch.set_printoptions(sci_mode=False)
 
